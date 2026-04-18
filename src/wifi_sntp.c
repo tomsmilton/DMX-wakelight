@@ -76,6 +76,9 @@ bool wifi_sntp_start(void) {
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
   ESP_ERROR_CHECK(esp_wifi_start());
+  // Required for DMX: power save adds ~100ms radio sleeps that corrupt UART
+  // timing. Costs ~20mA; we're mains-powered so we don't care.
+  ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
   ESP_LOGI(TAG, "connecting to SSID \"%s\"", WIFI_SSID);
   EventBits_t bits = xEventGroupWaitBits(g_events, GOT_IP_BIT, pdFALSE, pdTRUE,

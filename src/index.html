@@ -48,12 +48,26 @@
   .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
   .toggle { display: flex; align-items: center; gap: 10px; }
   .toggle input { width: 22px; height: 22px; }
+  .nav { margin-bottom: 16px; }
+  .nav a {
+    display: inline-block; background: var(--panel2); color: var(--text);
+    text-decoration: none; border: 1px solid var(--line); padding: 8px 12px;
+    border-radius: 8px; font-size: 13px;
+  }
   .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .seg button {
     background: var(--panel2); color: var(--text); border: 1px solid var(--line);
     font-weight: 500; padding: 12px; border-radius: 8px;
   }
   .seg button.active { background: var(--accent); color: #111; border-color: var(--accent); }
+  .graph { display: block; width: 100%; height: 160px; margin-bottom: 12px;
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; }
+  .graph .axis { stroke: var(--line); stroke-width: 1; }
+  .graph .grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 4; opacity: .5; }
+  .graph .label { fill: var(--muted); font: 10px -apple-system, system-ui, sans-serif; }
+  .graph .b-area { fill: var(--accent); opacity: .18; }
+  .graph .b-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
+  .graph .k-line { fill: none; stroke: #e8e8ea; stroke-width: 1.5; stroke-dasharray: 4 3; stroke-linejoin: round; opacity: .7; }
   .status { font-size: 13px; color: var(--muted); }
   .status b { color: var(--text); font-weight: 500; }
   .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
@@ -67,6 +81,7 @@
 <main>
   <h1>Wakelight</h1>
   <div class="sub" id="sub">loading…</div>
+  <div class="nav"><a href="/live">Live control →</a></div>
 
   <div class="card">
     <label style="display:block;margin-bottom:8px">Override</label>
@@ -85,6 +100,7 @@
   </div>
 
   <div class="card">
+    <svg class="graph" id="graph" viewBox="0 0 520 160" preserveAspectRatio="none" aria-hidden="true"></svg>
     <div id="points"></div>
     <div class="actions">
       <button class="ghost" id="add">+ waypoint</button>
@@ -115,6 +131,52 @@ function hhmmToMod(v) {
   return (h * 60 + m) | 0;
 }
 
+function renderGraph() {
+  const g = $('#graph');
+  const pts = [...state.points].sort((a, b) => a.m - b.m);
+  const W = 520, H = 160, PAD_L = 30, PAD_R = 42, PAD_T = 10, PAD_B = 22;
+  if (pts.length < 2) {
+    g.innerHTML = `<text class="label" x="${W/2}" y="${H/2}" text-anchor="middle">add 2+ waypoints to see the ramp</text>`;
+    return;
+  }
+  const t0 = pts[0].m, t1 = pts[pts.length - 1].m;
+  const span = Math.max(1, t1 - t0);
+  const x = m => PAD_L + (W - PAD_L - PAD_R) * (m - t0) / span;
+  const yB = b => H - PAD_B - (H - PAD_T - PAD_B) * b / 100;
+  const yK = k => H - PAD_B - (H - PAD_T - PAD_B) * (k - 2500) / 7500;
+  const cctColor = k => {
+    const t = Math.max(0, Math.min(1, (k - 2500) / 7500));
+    if (t < 0.15) return '#ffb070';
+    if (t < 0.35) return '#ffd9a6';
+    if (t < 0.55) return '#fff5d0';
+    if (t < 0.75) return '#e9efff';
+    return '#bfd5ff';
+  };
+  const bLine = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.m).toFixed(1)},${yB(p.b).toFixed(1)}`).join(' ');
+  const bArea = `${bLine} L${x(t1).toFixed(1)},${(H - PAD_B).toFixed(1)} L${x(t0).toFixed(1)},${(H - PAD_B).toFixed(1)} Z`;
+  const kLine = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.m).toFixed(1)},${yK(p.k).toFixed(1)}`).join(' ');
+  const dots = pts.map(p =>
+    `<circle cx="${x(p.m).toFixed(1)}" cy="${yB(p.b).toFixed(1)}" r="3" fill="${cctColor(p.k)}" stroke="var(--bg)" stroke-width="1"/>`
+  ).join('');
+  const xLabels = pts.map(p =>
+    `<text class="label" x="${x(p.m).toFixed(1)}" y="${H - 6}" text-anchor="middle">${modToHHMM(p.m)}</text>`
+  ).join('');
+  g.innerHTML = `
+    <line class="grid" x1="${PAD_L}" y1="${yB(100)}" x2="${W - PAD_R}" y2="${yB(100)}"/>
+    <line class="grid" x1="${PAD_L}" y1="${yB(50)}"  x2="${W - PAD_R}" y2="${yB(50)}"/>
+    <line class="axis" x1="${PAD_L}" y1="${H - PAD_B}" x2="${W - PAD_R}" y2="${H - PAD_B}"/>
+    <text class="label" x="${PAD_L - 6}" y="${yB(100) + 3}" text-anchor="end">100%</text>
+    <text class="label" x="${PAD_L - 6}" y="${yB(0) + 3}"   text-anchor="end">0%</text>
+    <text class="label" x="${W - PAD_R + 6}" y="${yK(10000) + 3}" text-anchor="start">10k K</text>
+    <text class="label" x="${W - PAD_R + 6}" y="${yK(2500) + 3}"  text-anchor="start">2.5k K</text>
+    <path class="b-area" d="${bArea}"/>
+    <path class="b-line" d="${bLine}"/>
+    <path class="k-line" d="${kLine}"/>
+    ${dots}
+    ${xLabels}
+  `;
+}
+
 function render() {
   ptsEl.innerHTML = '';
   state.points.forEach((p, i) => {
@@ -139,6 +201,7 @@ function render() {
     ptsEl.appendChild(d);
   });
   $('#enabled').checked = !!state.enabled;
+  renderGraph();
 }
 
 function toast(msg) {

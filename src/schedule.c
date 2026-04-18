@@ -117,27 +117,34 @@ void schedule_get(schedule_t *out) {
   xSemaphoreGive(g_lock);
 }
 
+// Interpolation is done in DMX-byte space (0-255) for brightness instead of
+// whole percents, so each step through the ramp is ~0.4% instead of the
+// 1%-that-maps-to-2-3-DMX-units jumps you get when interpolating in percent.
+static uint16_t pct_to_b255(uint8_t pct) {
+  if (pct >= 100) return 255;
+  return (uint16_t)((uint32_t)pct * 255 / 100);
+}
+
 bool schedule_eval(const schedule_t *s, uint16_t mod,
-                   uint8_t *brightness_pct, uint16_t *cct_k) {
+                   uint8_t *brightness_byte, uint16_t *cct_k) {
   if (!s->enabled || s->count == 0) return false;
   if (mod < s->points[0].minute_of_day) return false;
   if (mod >= s->points[s->count - 1].minute_of_day) {
-    *brightness_pct = s->points[s->count - 1].brightness_pct;
+    // Hold at the last waypoint until the schedule is disabled or reshaped.
+    *brightness_byte = (uint8_t)pct_to_b255(s->points[s->count - 1].brightness_pct);
     *cct_k = s->points[s->count - 1].cct_k;
-    // After last waypoint, lamp is "done" — caller decides whether to hold
-    // or switch off. We return false to mean "outside active ramp".
-    return false;
+    return true;
   }
-  // Find bracketing pair.
   for (int i = 0; i + 1 < s->count; i++) {
     const waypoint_t *a = &s->points[i];
     const waypoint_t *b = &s->points[i + 1];
     if (mod >= a->minute_of_day && mod < b->minute_of_day) {
       uint32_t span = b->minute_of_day - a->minute_of_day;
       uint32_t pos = mod - a->minute_of_day;
-      int32_t db = (int32_t)b->brightness_pct - (int32_t)a->brightness_pct;
+      int32_t ab = pct_to_b255(a->brightness_pct);
+      int32_t bb = pct_to_b255(b->brightness_pct);
       int32_t dc = (int32_t)b->cct_k - (int32_t)a->cct_k;
-      *brightness_pct = (uint8_t)(a->brightness_pct + (db * (int32_t)pos) / (int32_t)span);
+      *brightness_byte = (uint8_t)(ab + ((bb - ab) * (int32_t)pos) / (int32_t)span);
       *cct_k = (uint16_t)(a->cct_k + (dc * (int32_t)pos) / (int32_t)span);
       return true;
     }

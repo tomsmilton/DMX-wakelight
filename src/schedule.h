@@ -30,9 +30,11 @@ void schedule_get(schedule_t *out);
 
 // Compute interpolated output for a given minute-of-day.
 // Returns true if inside the ramp window (first..last waypoint); false means
-// lamp should be off. When inside, *brightness_pct and *cct_k are filled.
+// lamp should be off. When inside, *brightness_byte (0-255 DMX scale) and
+// *cct_k are filled. Interpolating in DMX-byte space avoids the visible
+// 1%-granularity steps of the percent-scale waypoints.
 bool schedule_eval(const schedule_t *s, uint16_t minute_of_day,
-                   uint8_t *brightness_pct, uint16_t *cct_k);
+                   uint8_t *brightness_byte, uint16_t *cct_k);
 
 // Serialize/deserialize to JSON. `buf` must be big enough (~1KB is plenty).
 int schedule_to_json(const schedule_t *s, char *buf, size_t buflen);
