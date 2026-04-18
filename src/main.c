@@ -1,62 +1,67 @@
-#include "esp_dmx.h"
+#include "dmx_out.h"
+#include "http_ui.h"
+#include "override.h"
+#include "schedule.h"
+#include "wifi_sntp.h"
+
+#define OVERRIDE_ON_BRIGHTNESS 100
+#define OVERRIDE_ON_CCT 4000
+
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define TX_PIN 17
-#define RX_PIN 16
-#define EN_PIN 4
-
-// Neewer PL60C @ DMX address 1, CCT mode.
-// Slots (0-indexed from FIXTURE_ADDR): [mode, brightness, CCT, G/M].
-// Mode = 0 selects CCT; CCT byte: 0 = 2500K warm, 255 = 10000K cool.
-#define FIXTURE_ADDR 1
+#include <time.h>
 
 static const char *TAG = "wakelight";
-static const dmx_port_t kDmxPort = DMX_NUM_1;
-static uint8_t g_dmx[DMX_PACKET_SIZE];
 
-static void apply(uint8_t brightness) {
-  uint8_t *f = &g_dmx[FIXTURE_ADDR];
-  f[0] = 0;
-  f[1] = brightness;
-  f[2] = 255;
-  f[3] = 128;
-  dmx_write(kDmxPort, g_dmx, DMX_PACKET_SIZE);
+static void ramp_task(void *arg) {
+  (void)arg;
+  const TickType_t period = pdMS_TO_TICKS(1000);
+  TickType_t tick = xTaskGetTickCount();
+  while (1) {
+    time_t now = time(NULL);
+    struct tm lt;
+    localtime_r(&now, &lt);
+    uint16_t mod = lt.tm_hour * 60 + lt.tm_min;
+
+    override_mode_t ov = override_get();
+    uint8_t out_b = 0;
+    uint16_t out_k = 2700;
+    if (ov == OVERRIDE_ON) {
+      out_b = OVERRIDE_ON_BRIGHTNESS;
+      out_k = OVERRIDE_ON_CCT;
+    } else if (ov == OVERRIDE_OFF) {
+      out_b = 0;
+      out_k = 2700;
+    } else {
+      schedule_t s;
+      schedule_get(&s);
+      uint8_t b = 0;
+      uint16_t k = 2700;
+      bool active = schedule_eval(&s, mod, &b, &k);
+      out_b = active ? b : 0;
+      out_k = active ? k : 2700;
+    }
+    dmx_out_set(out_b, out_k);
+    vTaskDelayUntil(&tick, period);
+  }
 }
 
 void app_main(void) {
-  ESP_LOGI(TAG, "wakelight blink test, addr %d", FIXTURE_ADDR);
+  ESP_LOGI(TAG, "wakelight booting");
 
-  dmx_config_t config = DMX_CONFIG_DEFAULT;
-  if (!dmx_driver_install(kDmxPort, &config, NULL, 0)) {
-    ESP_LOGE(TAG, "driver install failed");
-    return;
+  dmx_out_start();
+  dmx_out_set(0, 2700);
+
+  schedule_t s;
+  schedule_load(&s);
+
+  if (!wifi_sntp_start()) {
+    ESP_LOGE(TAG, "wifi failed; continuing without network");
+  } else {
+    http_ui_start();
   }
-  dmx_set_pin(kDmxPort, TX_PIN, RX_PIN, EN_PIN);
 
-  const TickType_t period = pdMS_TO_TICKS(30);
-  const int64_t blink_us = 2000000;
-  int64_t last_toggle = esp_timer_get_time();
-  bool on = true;
-  int cycle = 0;
-
-  apply(255);
-  ESP_LOGI(TAG, "#0 ON");
-
-  TickType_t tick = xTaskGetTickCount();
-  while (1) {
-    int64_t now = esp_timer_get_time();
-    if (now - last_toggle >= blink_us) {
-      on = !on;
-      apply(on ? 255 : 0);
-      last_toggle += blink_us;
-      if (on) cycle++;
-      ESP_LOGI(TAG, "#%d %s", cycle, on ? "ON" : "OFF");
-    }
-    dmx_send_num(kDmxPort, DMX_PACKET_SIZE);
-    dmx_wait_sent(kDmxPort, DMX_TIMEOUT_TICK);
-    vTaskDelayUntil(&tick, period);
-  }
+  xTaskCreate(ramp_task, "ramp", 4096, NULL, 4, NULL);
 }

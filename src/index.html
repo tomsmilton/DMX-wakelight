@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Wakelight</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0e0f12;
+    --panel: #181a20;
+    --panel2: #23262f;
+    --line: #2b2e38;
+    --text: #e8e8ea;
+    --muted: #9aa0ab;
+    --accent: #ffb84d;
+    --danger: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.4 -apple-system, system-ui, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: max(env(safe-area-inset-top), 16px) 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px; margin-bottom: 16px; }
+  .row { display: flex; gap: 10px; align-items: center; }
+  .row + .row { margin-top: 10px; }
+  label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  input[type=time], input[type=number] {
+    background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 8px; padding: 8px 10px; font: inherit; width: 100%;
+  }
+  input[type=time] { min-width: 110px; }
+  input[type=number] { min-width: 80px; }
+  .wp {
+    display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; align-items: end;
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px;
+    margin-bottom: 8px;
+  }
+  .wp label { display: block; margin-bottom: 4px; }
+  button {
+    background: var(--accent); color: #111; border: 0; border-radius: 8px;
+    padding: 10px 14px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); font-weight: 500; }
+  button.del { background: transparent; color: var(--danger); border: 1px solid var(--line); padding: 8px 10px; }
+  .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+  .toggle { display: flex; align-items: center; gap: 10px; }
+  .toggle input { width: 22px; height: 22px; }
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .seg button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    font-weight: 500; padding: 12px; border-radius: 8px;
+  }
+  .seg button.active { background: var(--accent); color: #111; border-color: var(--accent); }
+  .status { font-size: 13px; color: var(--muted); }
+  .status b { color: var(--text); font-weight: 500; }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    background: #1f2029; border: 1px solid var(--line); color: var(--text);
+    padding: 10px 14px; border-radius: 10px; opacity: 0; transition: opacity .2s;
+    pointer-events: none; }
+  .toast.on { opacity: 1; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Wakelight</h1>
+  <div class="sub" id="sub">loading…</div>
+
+  <div class="card">
+    <label style="display:block;margin-bottom:8px">Override</label>
+    <div class="seg" id="override">
+      <button data-mode="auto">Auto</button>
+      <button data-mode="on">On</button>
+      <button data-mode="off">Off</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="toggle">
+      <input type="checkbox" id="enabled">
+      <label for="enabled" style="font-size:14px;text-transform:none;color:var(--text);">Schedule enabled</label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div id="points"></div>
+    <div class="actions">
+      <button class="ghost" id="add">+ waypoint</button>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="ghost" id="reload">reload</button>
+    <button id="save">save</button>
+  </div>
+
+  <div class="status" id="status" style="margin-top:16px"></div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const ptsEl = $('#points');
+let state = { enabled: false, points: [] };
+
+function modToHHMM(m) {
+  const h = Math.floor(m / 60), mm = m % 60;
+  return `${String(h).padStart(2,'0')}:${String(mm).padStart(2,'0')}`;
+}
+function hhmmToMod(v) {
+  const [h, m] = v.split(':').map(Number);
+  return (h * 60 + m) | 0;
+}
+
+function render() {
+  ptsEl.innerHTML = '';
+  state.points.forEach((p, i) => {
+    const d = document.createElement('div');
+    d.className = 'wp';
+    d.innerHTML = `
+      <div><label>time</label><input type="time" value="${modToHHMM(p.m)}" data-k="m"></div>
+      <div><label>bright %</label><input type="number" min="0" max="100" value="${p.b}" data-k="b"></div>
+      <div><label>colour K</label><input type="number" min="2500" max="10000" step="50" value="${p.k}" data-k="k"></div>
+      <button class="del" title="remove">✕</button>
+    `;
+    d.querySelectorAll('input').forEach(inp => {
+      inp.addEventListener('change', () => {
+        const k = inp.dataset.k;
+        if (k === 'm') p.m = hhmmToMod(inp.value);
+        else p[k] = Number(inp.value);
+      });
+    });
+    d.querySelector('.del').addEventListener('click', () => {
+      state.points.splice(i, 1); render();
+    });
+    ptsEl.appendChild(d);
+  });
+  $('#enabled').checked = !!state.enabled;
+}
+
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('on');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('on'), 1500);
+}
+
+async function load() {
+  const r = await fetch('/api/schedule');
+  const j = await r.json();
+  state.enabled = !!j.enabled;
+  state.points = (j.points || []).map(p => ({ m: p.m, b: p.b, k: p.k }));
+  render();
+}
+
+async function save() {
+  state.enabled = $('#enabled').checked;
+  const body = JSON.stringify({
+    enabled: state.enabled,
+    points: state.points.map(p => ({ m: p.m|0, b: p.b|0, k: p.k|0 })),
+  });
+  const r = await fetch('/api/schedule', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'}, body,
+  });
+  if (!r.ok) { toast('save failed'); return; }
+  const j = await r.json();
+  state.enabled = !!j.enabled;
+  state.points = (j.points || []).map(p => ({ m: p.m, b: p.b, k: p.k }));
+  render();
+  toast('saved');
+}
+
+function setOverrideUI(mode) {
+  document.querySelectorAll('#override button').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === mode);
+  });
+}
+async function setOverride(mode) {
+  setOverrideUI(mode);
+  try {
+    await fetch('/api/override', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ mode }),
+    });
+  } catch (e) { toast('override failed'); }
+}
+document.querySelectorAll('#override button').forEach(b => {
+  b.addEventListener('click', () => setOverride(b.dataset.mode));
+});
+
+$('#add').addEventListener('click', () => {
+  const last = state.points[state.points.length - 1];
+  const base = last ? last.m + 15 : 7 * 60;
+  state.points.push({ m: Math.min(base, 1439), b: last ? Math.min(100, last.b + 20) : 50, k: last ? last.k : 4000 });
+  render();
+});
+$('#reload').addEventListener('click', load);
+$('#save').addEventListener('click', save);
+
+async function tickStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const j = await r.json();
+    const parts = [
+      `<b>${j.now}</b>`,
+      j.time_valid ? '' : '<span style="color:var(--danger)">time not synced</span>',
+      j.active ? `ramping → <b>${j.brightness_pct}%</b> @ <b>${j.cct_k}K</b>` : 'idle',
+    ].filter(Boolean);
+    $('#status').innerHTML = parts.join(' · ');
+    $('#sub').textContent = j.time_valid ? 'connected' : 'waiting for time sync';
+    if (j.override) setOverrideUI(j.override);
+  } catch (e) {
+    $('#status').textContent = 'status unavailable';
+  }
+}
+
+load();
+tickStatus();
+setInterval(tickStatus, 5000);
+</script>
+</body>
+</html>
