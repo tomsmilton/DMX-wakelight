@@ -1,6 +1,7 @@
 #include "http_ui.h"
 
 #include "cJSON.h"
+#include "dmx_out.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "mdns.h"
@@ -9,15 +10,23 @@
 
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 static const char *TAG = "http";
 
 extern const char index_html_data[];
 extern const size_t index_html_len;
+extern const char live_html_data[];
+extern const size_t live_html_len;
 
 static esp_err_t root_get(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/html; charset=utf-8");
   return httpd_resp_send(req, index_html_data, index_html_len);
+}
+
+static esp_err_t live_get(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/html; charset=utf-8");
+  return httpd_resp_send(req, live_html_data, live_html_len);
 }
 
 static esp_err_t schedule_get_h(httpd_req_t *req) {
@@ -61,9 +70,10 @@ static esp_err_t status_get_h(httpd_req_t *req) {
 
   schedule_t s;
   schedule_get(&s);
-  uint8_t b = 0;
+  uint8_t byte = 0;
   uint16_t k = 2700;
-  bool active = schedule_eval(&s, mod, &b, &k);
+  bool active = schedule_eval(&s, mod, &byte, &k);
+  uint8_t pct = (uint8_t)((uint32_t)byte * 100 / 255);
 
   override_mode_t ov = override_get();
 
@@ -74,7 +84,7 @@ static esp_err_t status_get_h(httpd_req_t *req) {
   cJSON_AddNumberToObject(root, "mod", mod);
   cJSON_AddBoolToObject(root, "time_valid", now > 1700000000);
   cJSON_AddBoolToObject(root, "active", active);
-  cJSON_AddNumberToObject(root, "brightness_pct", b);
+  cJSON_AddNumberToObject(root, "brightness_pct", pct);
   cJSON_AddNumberToObject(root, "cct_k", k);
   cJSON_AddStringToObject(root, "override", override_name(ov));
 
@@ -113,13 +123,99 @@ static esp_err_t override_post_h(httpd_req_t *req) {
   return httpd_resp_send(req, out, len);
 }
 
+// WebSocket for live slider control. On open we switch to MANUAL; on socket
+// close (clean close frame OR dropped connection) we revert to AUTO.
+// The close hook below handles the drop case.
+#define MAX_WS_FDS 4
+static int g_ws_fds[MAX_WS_FDS];
+static int g_ws_count = 0;
+
+static void ws_add_fd(int fd) {
+  for (int i = 0; i < MAX_WS_FDS; i++) if (g_ws_fds[i] == fd) return;
+  for (int i = 0; i < MAX_WS_FDS; i++) {
+    if (g_ws_fds[i] == 0) { g_ws_fds[i] = fd; g_ws_count++; return; }
+  }
+}
+
+static void ws_remove_fd(int fd) {
+  for (int i = 0; i < MAX_WS_FDS; i++) {
+    if (g_ws_fds[i] == fd) {
+      g_ws_fds[i] = 0;
+      if (g_ws_count > 0) g_ws_count--;
+      break;
+    }
+  }
+  if (g_ws_count == 0 && override_get() == OVERRIDE_MANUAL) {
+    override_set(OVERRIDE_AUTO);
+    ESP_LOGI(TAG, "ws drop -> auto");
+  }
+}
+
+static esp_err_t live_ws_h(httpd_req_t *req) {
+  int fd = httpd_req_to_sockfd(req);
+  if (req->method == HTTP_GET) {
+    ws_add_fd(fd);
+    ESP_LOGI(TAG, "ws open fd=%d (clients=%d)", fd, g_ws_count);
+    // Don't change state yet — only flip to MANUAL when a slider message
+    // actually arrives. Keeps reconnects from flashing the lamp.
+    return ESP_OK;
+  }
+
+  httpd_ws_frame_t frame = {0};
+  esp_err_t err = httpd_ws_recv_frame(req, &frame, 0);
+  if (err != ESP_OK) return err;
+  if (frame.len == 0 || frame.len > 128) return ESP_OK;
+
+  uint8_t buf[129];
+  frame.payload = buf;
+  err = httpd_ws_recv_frame(req, &frame, sizeof(buf) - 1);
+  if (err != ESP_OK) return err;
+  buf[frame.len] = 0;
+
+  if (frame.type == HTTPD_WS_TYPE_CLOSE) {
+    ws_remove_fd(fd);
+    return ESP_OK;
+  }
+
+  if (frame.type != HTTPD_WS_TYPE_TEXT) return ESP_OK;
+
+  cJSON *j = cJSON_Parse((const char *)buf);
+  if (!j) return ESP_OK;
+  cJSON *b = cJSON_GetObjectItem(j, "b");
+  cJSON *k = cJSON_GetObjectItem(j, "k");
+  cJSON *gm = cJSON_GetObjectItem(j, "gm");  // -100..+100, 0 = neutral
+  if (cJSON_IsNumber(b) && cJSON_IsNumber(k)) {
+    uint8_t bp = (uint8_t)b->valueint;
+    uint16_t kk = (uint16_t)k->valueint;
+    int gm_val = cJSON_IsNumber(gm) ? gm->valueint : 0;
+    if (gm_val < -100) gm_val = -100;
+    if (gm_val >  100) gm_val =  100;
+    uint8_t gm_byte = (uint8_t)((gm_val + 100) * 255 / 200);
+    override_set_manual(bp, kk, gm_byte);
+    uint8_t out_byte = (bp >= 100) ? 255 : (uint8_t)((uint32_t)bp * 255 / 100);
+    dmx_out_set(out_byte, kk, gm_byte);
+  }
+  cJSON_Delete(j);
+  return ESP_OK;
+}
+
 static const httpd_uri_t uris[] = {
   {.uri = "/",              .method = HTTP_GET,  .handler = root_get},
+  {.uri = "/live",          .method = HTTP_GET,  .handler = live_get},
   {.uri = "/api/schedule",  .method = HTTP_GET,  .handler = schedule_get_h},
   {.uri = "/api/schedule",  .method = HTTP_PUT,  .handler = schedule_put_h},
   {.uri = "/api/status",    .method = HTTP_GET,  .handler = status_get_h},
   {.uri = "/api/override",  .method = HTTP_POST, .handler = override_post_h},
+  {.uri = "/ws/live",       .method = HTTP_GET,  .handler = live_ws_h, .is_websocket = true},
 };
+
+// Called by httpd when any socket closes (clean or dropped). We close the
+// socket and, if it was one of our WS clients, fall back to AUTO.
+static void ws_close_fn(httpd_handle_t hd, int fd) {
+  (void)hd;
+  ws_remove_fd(fd);
+  close(fd);
+}
 
 static void start_mdns(void) {
   esp_err_t err = mdns_init();
@@ -138,6 +234,7 @@ void http_ui_start(void) {
 
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
   cfg.stack_size = 6144;
+  cfg.close_fn = ws_close_fn;
   httpd_handle_t srv = NULL;
   if (httpd_start(&srv, &cfg) != ESP_OK) {
     ESP_LOGE(TAG, "httpd_start failed");

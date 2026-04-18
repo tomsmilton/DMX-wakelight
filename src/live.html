@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Wakelight · Live</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0e0f12;
+    --panel: #181a20;
+    --panel2: #23262f;
+    --line: #2b2e38;
+    --text: #e8e8ea;
+    --muted: #9aa0ab;
+    --accent: #ffb84d;
+    --danger: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.4 -apple-system, system-ui, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: max(env(safe-area-inset-top), 16px) 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .nav { margin-bottom: 16px; }
+  .nav a {
+    display: inline-block; background: var(--panel2); color: var(--text);
+    text-decoration: none; border: 1px solid var(--line); padding: 8px 12px;
+    border-radius: 8px; font-size: 13px;
+  }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px; margin-bottom: 16px; }
+  .slider { display: flex; flex-direction: column; gap: 8px; }
+  .slider + .slider { margin-top: 20px; }
+  .label-row { display: flex; justify-content: space-between; align-items: baseline; }
+  .label-row label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .label-row .value { font-size: 16px; font-weight: 600; }
+  input[type=range] {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 32px; background: transparent;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 6px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line);
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; width: 26px; height: 26px; border-radius: 50%;
+    background: var(--accent); margin-top: -11px; border: 0;
+  }
+  input[type=range]::-moz-range-track { height: 6px; border-radius: 999px; background: var(--panel2); }
+  input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); border: 0; }
+  /* Fill-the-track gradient showing the warm-to-cool range for CCT */
+  .cct-track input[type=range]::-webkit-slider-runnable-track {
+    background: linear-gradient(to right, #ffb070, #ffd9b3, #ffffff, #bfd5ff, #88b3ff);
+  }
+  .gm-track input[type=range]::-webkit-slider-runnable-track {
+    background: linear-gradient(to right, #7ecf7e, #ffffff, #e47fe4);
+  }
+  .conn { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .conn.on  { color: #6fce7a; }
+  .conn.off { color: var(--danger); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Wakelight · Live</h1>
+  <div class="sub">Direct control — schedule paused while this tab is open.</div>
+  <div class="nav"><a href="/">← Schedule</a></div>
+
+  <div class="card">
+    <div class="slider">
+      <div class="label-row">
+        <label>Brightness</label>
+        <span class="value" id="bVal">0%</span>
+      </div>
+      <input type="range" id="b" min="0" max="100" value="0">
+    </div>
+
+    <div class="slider cct-track">
+      <div class="label-row">
+        <label>Colour temperature</label>
+        <span class="value" id="kVal">2700 K</span>
+      </div>
+      <input type="range" id="k" min="2500" max="10000" step="50" value="2700">
+    </div>
+
+    <div class="slider gm-track">
+      <div class="label-row">
+        <label>Green ↔ Magenta</label>
+        <span class="value" id="gVal">0</span>
+      </div>
+      <input type="range" id="g" min="-100" max="100" step="1" value="0">
+    </div>
+
+    <div class="conn off" id="conn">disconnected</div>
+  </div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let ws = null;
+let pending = null;
+let sendTimer = null;
+
+function send() {
+  if (!ws || ws.readyState !== 1 || !pending) return;
+  ws.send(JSON.stringify(pending));
+  pending = null;
+}
+
+function queue(msg) {
+  pending = { ...(pending || {}), ...msg };
+  // Throttle to ~30ms so slider drags don't flood the WS.
+  if (!sendTimer) {
+    sendTimer = setTimeout(() => { sendTimer = null; send(); }, 30);
+  }
+}
+
+function setConn(on) {
+  const el = $('#conn');
+  el.textContent = on ? 'connected' : 'disconnected';
+  el.classList.toggle('on', on);
+  el.classList.toggle('off', !on);
+}
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws/live`);
+  ws.addEventListener('open', () => { setConn(true); send(); });
+  ws.addEventListener('close', () => { setConn(false); setTimeout(connect, 1000); });
+  ws.addEventListener('error', () => ws.close());
+}
+
+const bEl = $('#b'), kEl = $('#k'), gEl = $('#g');
+function refresh() {
+  $('#bVal').textContent = `${bEl.value}%`;
+  $('#kVal').textContent = `${kEl.value} K`;
+  const gv = Number(gEl.value);
+  $('#gVal').textContent = gv > 0 ? `+${gv} M` : gv < 0 ? `${gv} G` : '0';
+}
+function push() {
+  queue({ b: Number(bEl.value), k: Number(kEl.value), gm: Number(gEl.value) });
+}
+[bEl, kEl, gEl].forEach(el => el.addEventListener('input', () => { refresh(); push(); }));
+
+refresh();
+connect();
+</script>
+</body>
+</html>
