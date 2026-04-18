@@ -1,5 +1,6 @@
 .pio/
 .vscode/
+.claude/
 .DS_Store
 logs/
 sdkconfig.defaults.*
