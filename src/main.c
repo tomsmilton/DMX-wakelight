@@ -1,3 +1,4 @@
+#include "dismiss.h"
 #include "dmx_out.h"
 #include "http_ui.h"
 #include "override.h"
@@ -40,13 +41,19 @@ static void ramp_task(void *arg) {
       override_get_manual(&mpct, &out_k, &out_gm);
       out_byte = (mpct >= 100) ? 255 : (uint8_t)((uint32_t)mpct * 255 / 100);
     } else {
-      schedule_t s;
-      schedule_get(&s);
-      uint8_t b = 0;
-      uint16_t k = 2700;
-      bool active = schedule_eval(&s, mod, &b, &k);
-      out_byte = active ? b : 0;
-      out_k = active ? k : 2700;
+      // AUTO: follow schedule unless the user dismissed for today.
+      if (dismiss_is_active()) {
+        out_byte = 0;
+        out_k = 2700;
+      } else {
+        schedule_t s;
+        schedule_get(&s);
+        uint8_t b = 0;
+        uint16_t k = 2700;
+        bool active = schedule_eval(&s, mod, &b, &k);
+        out_byte = active ? b : 0;
+        out_k = active ? k : 2700;
+      }
     }
     dmx_out_set(out_byte, out_k, out_gm);
     vTaskDelayUntil(&tick, period);
