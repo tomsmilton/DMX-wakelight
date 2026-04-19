@@ -76,21 +76,34 @@ static esp_err_t status_get_h(httpd_req_t *req) {
   // Mirror the ramp task's logic so the UI sees what actually goes to DMX.
   uint8_t byte = 0;
   uint16_t k = 2700;
+  uint8_t gm_byte = 128;
   bool active = false;
-  if (ov == OVERRIDE_ON) { byte = 255; k = 4000; active = true; }
-  else if (ov == OVERRIDE_OFF) { byte = 0; k = 2700; active = false; }
+  const char *state = "idle";
+  if (now < 1700000000) state = "no_time";
+  else if (ov == OVERRIDE_ON) { byte = 255; k = 4000; active = true; state = "on"; }
+  else if (ov == OVERRIDE_OFF) { byte = 0; k = 2700; state = "off"; }
   else if (ov == OVERRIDE_MANUAL) {
-    uint8_t mp = 0; uint8_t gm = 128;
-    override_get_manual(&mp, &k, &gm);
+    uint8_t mp = 0;
+    override_get_manual(&mp, &k, &gm_byte);
     byte = (mp >= 100) ? 255 : (uint8_t)((uint32_t)mp * 255 / 100);
     active = true;
+    state = "manual";
   } else if (dism) {
-    byte = 0; k = 2700; active = false;
+    byte = 0; k = 2700; state = "dismissed";
+  } else if (!s.enabled || s.count == 0 || mod < s.points[0].minute_of_day) {
+    state = "idle";
+  } else if (mod >= s.points[s.count - 1].minute_of_day) {
+    schedule_eval(&s, mod, &byte, &k);
+    active = true;
+    state = "holding";
   } else {
     active = schedule_eval(&s, mod, &byte, &k);
+    state = active ? "ramping" : "idle";
     if (!active) { byte = 0; k = 2700; }
   }
   uint8_t pct = (uint8_t)((uint32_t)byte * 100 / 255);
+  // Convert gm byte (0-255, 128 neutral) back to slider scale -100..+100.
+  int gm_slider = ((int)gm_byte * 200 / 255) - 100;
 
   cJSON *root = cJSON_CreateObject();
   char tbuf[32];
@@ -103,6 +116,8 @@ static esp_err_t status_get_h(httpd_req_t *req) {
   cJSON_AddNumberToObject(root, "cct_k", k);
   cJSON_AddStringToObject(root, "override", override_name(ov));
   cJSON_AddBoolToObject(root, "dismissed", dism);
+  cJSON_AddNumberToObject(root, "gm", gm_slider);
+  cJSON_AddStringToObject(root, "state", state);
 
   char *out = cJSON_PrintUnformatted(root);
   cJSON_Delete(root);
@@ -161,10 +176,8 @@ static void ws_remove_fd(int fd) {
       break;
     }
   }
-  if (g_ws_count == 0 && override_get() == OVERRIDE_MANUAL) {
-    override_set(OVERRIDE_AUTO);
-    ESP_LOGI(TAG, "ws drop -> auto");
-  }
+  // Keep MANUAL state across WS drop — user must explicitly hit Auto/On/Off
+  // on the schedule page to leave manual.
 }
 
 static esp_err_t live_ws_h(httpd_req_t *req) {
@@ -216,30 +229,10 @@ static esp_err_t live_ws_h(httpd_req_t *req) {
 }
 
 static esp_err_t dismiss_post_h(httpd_req_t *req) {
-  // POST /api/dismiss  body: {"active":bool}. Missing/true = dismiss today,
-  // false = undo.
-  char body[64];
-  int n = req->content_len < (int)sizeof(body) - 1 ? req->content_len : (int)sizeof(body) - 1;
-  int total = 0;
-  while (total < n) {
-    int r = httpd_req_recv(req, body + total, n - total);
-    if (r <= 0) return httpd_resp_send_500(req);
-    total += r;
-  }
-  body[total] = 0;
-  bool active = true;
-  if (total > 0) {
-    cJSON *j = cJSON_Parse(body);
-    if (j) {
-      cJSON *a = cJSON_GetObjectItem(j, "active");
-      if (cJSON_IsBool(a)) active = cJSON_IsTrue(a);
-      cJSON_Delete(j);
-    }
-  }
-  if (active) dismiss_for_today(); else dismiss_clear();
-  ESP_LOGI(TAG, "dismiss -> %s", active ? "active" : "cleared");
+  // POST /api/dismiss — terminal for the local date. No undo path.
+  dismiss_for_today();
   httpd_resp_set_type(req, "application/json");
-  const char *r = active ? "{\"active\":true}" : "{\"active\":false}";
+  const char *r = "{\"active\":true}";
   return httpd_resp_send(req, r, strlen(r));
 }
 
