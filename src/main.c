@@ -24,7 +24,7 @@ static void ramp_task(void *arg) {
     time_t now = time(NULL);
     struct tm lt;
     localtime_r(&now, &lt);
-    uint16_t mod = lt.tm_hour * 60 + lt.tm_min;
+    uint32_t sod = (uint32_t)lt.tm_hour * 3600 + (uint32_t)lt.tm_min * 60 + (uint32_t)lt.tm_sec;
 
     override_mode_t ov = override_get();
     uint8_t out_byte = 0;
@@ -50,7 +50,7 @@ static void ramp_task(void *arg) {
         schedule_get(&s);
         uint8_t b = 0;
         uint16_t k = 2700;
-        bool active = schedule_eval(&s, mod, &b, &k);
+        bool active = schedule_eval(&s, sod, &b, &k);
         out_byte = active ? b : 0;
         out_k = active ? k : 2700;
       }

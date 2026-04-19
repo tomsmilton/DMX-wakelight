@@ -138,11 +138,13 @@ static uint16_t pct_to_b255(uint8_t pct) {
   return (uint16_t)((uint32_t)pct * 255 / 100);
 }
 
-bool schedule_eval(const schedule_t *s, uint16_t mod,
+bool schedule_eval(const schedule_t *s, uint32_t sod,
                    uint8_t *brightness_byte, uint16_t *cct_k) {
   if (!s->enabled || s->count == 0) return false;
-  if (mod < s->points[0].minute_of_day) return false;
-  if (mod >= s->points[s->count - 1].minute_of_day) {
+  uint32_t first_sod = (uint32_t)s->points[0].minute_of_day * 60;
+  uint32_t last_sod  = (uint32_t)s->points[s->count - 1].minute_of_day * 60;
+  if (sod < first_sod) return false;
+  if (sod >= last_sod) {
     // Hold at the last waypoint until the schedule is disabled or reshaped.
     *brightness_byte = (uint8_t)pct_to_b255(s->points[s->count - 1].brightness_pct);
     *cct_k = s->points[s->count - 1].cct_k;
@@ -151,9 +153,11 @@ bool schedule_eval(const schedule_t *s, uint16_t mod,
   for (int i = 0; i + 1 < s->count; i++) {
     const waypoint_t *a = &s->points[i];
     const waypoint_t *b = &s->points[i + 1];
-    if (mod >= a->minute_of_day && mod < b->minute_of_day) {
-      uint32_t span = b->minute_of_day - a->minute_of_day;
-      uint32_t pos = mod - a->minute_of_day;
+    uint32_t a_sod = (uint32_t)a->minute_of_day * 60;
+    uint32_t b_sod = (uint32_t)b->minute_of_day * 60;
+    if (sod >= a_sod && sod < b_sod) {
+      uint32_t span = b_sod - a_sod;
+      uint32_t pos = sod - a_sod;
       int32_t ab = pct_to_b255(a->brightness_pct);
       int32_t bb = pct_to_b255(b->brightness_pct);
       int32_t dc = (int32_t)b->cct_k - (int32_t)a->cct_k;

@@ -28,12 +28,13 @@ bool schedule_save(schedule_t *s);
 // Get a snapshot of the currently active schedule (thread-safe copy).
 void schedule_get(schedule_t *out);
 
-// Compute interpolated output for a given minute-of-day.
+// Compute interpolated output for a given second-of-day (0..86399).
 // Returns true if inside the ramp window (first..last waypoint); false means
 // lamp should be off. When inside, *brightness_byte (0-255 DMX scale) and
 // *cct_k are filled. Interpolating in DMX-byte space avoids the visible
-// 1%-granularity steps of the percent-scale waypoints.
-bool schedule_eval(const schedule_t *s, uint16_t minute_of_day,
+// 1%-granularity steps of the percent-scale waypoints; second-resolution
+// input keeps a short segment from quantising into large per-minute jumps.
+bool schedule_eval(const schedule_t *s, uint32_t sec_of_day,
                    uint8_t *brightness_byte, uint16_t *cct_k);
 
 // Serialize/deserialize to JSON. `buf` must be big enough (~1KB is plenty).

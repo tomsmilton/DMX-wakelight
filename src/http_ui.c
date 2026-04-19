@@ -67,6 +67,7 @@ static esp_err_t status_get_h(httpd_req_t *req) {
   struct tm lt;
   localtime_r(&now, &lt);
   uint16_t mod = lt.tm_hour * 60 + lt.tm_min;
+  uint32_t sod = (uint32_t)lt.tm_hour * 3600 + (uint32_t)lt.tm_min * 60 + (uint32_t)lt.tm_sec;
 
   schedule_t s;
   schedule_get(&s);
@@ -79,6 +80,8 @@ static esp_err_t status_get_h(httpd_req_t *req) {
   uint8_t gm_byte = 128;
   bool active = false;
   const char *state = "idle";
+  uint32_t first_sod = s.count ? (uint32_t)s.points[0].minute_of_day * 60 : 0;
+  uint32_t last_sod  = s.count ? (uint32_t)s.points[s.count - 1].minute_of_day * 60 : 0;
   if (now < 1700000000) state = "no_time";
   else if (ov == OVERRIDE_ON) { byte = 255; k = 4000; active = true; state = "on"; }
   else if (ov == OVERRIDE_OFF) { byte = 0; k = 2700; state = "off"; }
@@ -90,14 +93,14 @@ static esp_err_t status_get_h(httpd_req_t *req) {
     state = "manual";
   } else if (dism) {
     byte = 0; k = 2700; state = "dismissed";
-  } else if (!s.enabled || s.count == 0 || mod < s.points[0].minute_of_day) {
+  } else if (!s.enabled || s.count == 0 || sod < first_sod) {
     state = "idle";
-  } else if (mod >= s.points[s.count - 1].minute_of_day) {
-    schedule_eval(&s, mod, &byte, &k);
+  } else if (sod >= last_sod) {
+    schedule_eval(&s, sod, &byte, &k);
     active = true;
     state = "holding";
   } else {
-    active = schedule_eval(&s, mod, &byte, &k);
+    active = schedule_eval(&s, sod, &byte, &k);
     state = active ? "ramping" : "idle";
     if (!active) { byte = 0; k = 2700; }
   }
