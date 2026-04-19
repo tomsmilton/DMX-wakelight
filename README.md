@@ -12,6 +12,12 @@ phone ──WiFi──▶ ESP32 ──DMX-512──▶ PL60C
 
 ## What it does
 
+<p align="center">
+  <img src="docs/screenshots/schedule.png" alt="Schedule page" width="380">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/live.png" alt="Live control page" width="380">
+</p>
+
 ### Schedule (`/`)
 
 A ramp is defined by an ordered list of **waypoints**, each with a
