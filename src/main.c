@@ -68,6 +68,7 @@ void app_main(void) {
 
   schedule_t s;
   schedule_load(&s);
+  dismiss_init();
 
   if (!wifi_sntp_start()) {
     ESP_LOGE(TAG, "wifi failed; continuing without network");

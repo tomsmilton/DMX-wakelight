@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Embed HTML files into C arrays for the ESP firmware.
 
-For each page in PAGES, regenerates src/<symbol>.c if the source .html is newer.
+Files are gzipped before embedding; the HTTP handler serves them with
+Content-Encoding: gzip so the browser decompresses transparently. Regenerates
+src/<symbol>.c only if the source .html is newer.
 """
+import gzip
 import os
 from pathlib import Path
 
@@ -19,7 +22,9 @@ def gen(root: Path, html_name: str, symbol: str) -> None:
         return
     if out.exists() and out.stat().st_mtime >= html.stat().st_mtime:
         return
-    data = html.read_bytes()
+    raw = html.read_bytes()
+    # mtime=0 keeps gzip deterministic across builds (no rebuild churn).
+    data = gzip.compress(raw, compresslevel=9, mtime=0)
     bytes_per_line = 16
     lines = []
     for i in range(0, len(data), bytes_per_line):
@@ -28,15 +33,15 @@ def gen(root: Path, html_name: str, symbol: str) -> None:
     body = "\n".join(lines)
     text = (
         f'// Auto-generated from {html_name} by scripts/gen_index_html.py. Do not edit.\n'
+        '// Contents are gzip-compressed; HTTP handler sets Content-Encoding: gzip.\n'
         '#include <stddef.h>\n\n'
-        f'const char {symbol}_data[] = {{\n'
+        f'const unsigned char {symbol}_data[] = {{\n'
         f'{body}\n'
-        '  0x00\n'
         '};\n'
         f'const size_t {symbol}_len = {len(data)};\n'
     )
     out.write_text(text)
-    print(f"gen_index_html: wrote {out.name} ({len(data)} bytes)")
+    print(f"gen_index_html: wrote {out.name} ({len(data)} bytes gz, from {len(raw)} raw)")
 
 
 def main(root: Path) -> int:

@@ -87,18 +87,38 @@
   .seg button:hover { background: #ead9b9; }
   .seg button.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   .dismiss-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
-  .dismiss-row button.on { background: var(--text); color: var(--panel); border-color: var(--text); }
+  .dismiss-row button:disabled { opacity: .55; cursor: default; }
   .dismiss-note { color: var(--muted); font-size: 12px; font-style: italic; }
   .graph { display: block; width: 100%; height: 160px; margin-bottom: 12px;
-    background: var(--panel2); border: 1px solid var(--line-soft); border-radius: 10px; }
+    background: var(--panel2); border: 1px solid var(--line-soft); border-radius: 10px;
+    overflow: hidden; }
   .graph .axis { stroke: var(--line); stroke-width: 1; }
   .graph .grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 4; opacity: .5; }
   .graph .label { fill: var(--muted); font: 10px -apple-system, system-ui, sans-serif; }
   .graph .b-area { fill: var(--accent); opacity: .16; }
   .graph .b-line { fill: none; stroke: var(--accent); stroke-width: 2.2; stroke-linejoin: round; }
   .graph .k-line { fill: none; stroke: #5a4a36; stroke-width: 1.4; stroke-dasharray: 4 3; stroke-linejoin: round; opacity: .55; }
-  .status { font-size: 13px; color: var(--muted); }
-  .status b { color: var(--text); font-weight: 600; }
+  .status-pill {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--panel); border: 1px solid var(--line-soft); border-radius: 12px;
+    padding: 10px 14px; margin-bottom: 16px; font-size: 13px;
+    box-shadow: var(--shadow);
+  }
+  .status-pill .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 8px;
+  }
+  .status-pill .dot.ramping  { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  .status-pill .dot.holding  { background: var(--accent); }
+  .status-pill .dot.on       { background: var(--accent); }
+  .status-pill .dot.off      { background: #b5b0a6; }
+  .status-pill .dot.manual   { background: #6a8f3a; }
+  .status-pill .dot.dismissed{ background: #b5b0a6; }
+  .status-pill .dot.idle     { background: #b5b0a6; }
+  .status-pill .dot.no_time  { background: var(--danger); }
+  .status-pill .label { font-weight: 600; color: var(--text); text-transform: capitalize; }
+  .status-pill .detail { color: var(--muted); }
+  .status-pill .time { color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
   .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
     background: var(--text); border: 1px solid var(--text); color: var(--panel);
     padding: 10px 16px; border-radius: 999px; opacity: 0; transition: opacity .2s;
@@ -110,6 +130,7 @@
 <main>
   <h1>Wake<span class="mark">light</span></h1>
   <div class="sub" id="sub">loading…</div>
+  <div class="status-pill" id="status">…</div>
   <div class="nav"><a href="/live">Live control →</a></div>
 
   <div class="card">
@@ -145,7 +166,6 @@
     <button id="save">save</button>
   </div>
 
-  <div class="status" id="status" style="margin-top:16px"></div>
 </main>
 
 <div class="toast" id="toast"></div>
@@ -167,7 +187,7 @@ function hhmmToMod(v) {
 function renderGraph() {
   const g = $('#graph');
   const pts = [...state.points].sort((a, b) => a.m - b.m);
-  const W = 520, H = 160, PAD_L = 30, PAD_R = 42, PAD_T = 10, PAD_B = 22;
+  const W = 520, H = 160, PAD_L = 44, PAD_R = 52, PAD_T = 12, PAD_B = 24;
   if (pts.length < 2) {
     g.innerHTML = `<text class="label" x="${W/2}" y="${H/2}" text-anchor="middle">add 2+ waypoints to see the ramp</text>`;
     return;
@@ -200,8 +220,8 @@ function renderGraph() {
     <line class="axis" x1="${PAD_L}" y1="${H - PAD_B}" x2="${W - PAD_R}" y2="${H - PAD_B}"/>
     <text class="label" x="${PAD_L - 6}" y="${yB(100) + 3}" text-anchor="end">100%</text>
     <text class="label" x="${PAD_L - 6}" y="${yB(0) + 3}"   text-anchor="end">0%</text>
-    <text class="label" x="${W - PAD_R + 6}" y="${yK(10000) + 3}" text-anchor="start">10k K</text>
-    <text class="label" x="${W - PAD_R + 6}" y="${yK(2500) + 3}"  text-anchor="start">2.5k K</text>
+    <text class="label" x="${W - PAD_R + 6}" y="${yK(10000) + 3}" text-anchor="start">10k</text>
+    <text class="label" x="${W - PAD_R + 6}" y="${yK(2500) + 3}"  text-anchor="start">2.5k</text>
     <path class="b-area" d="${bArea}"/>
     <path class="b-line" d="${bLine}"/>
     <path class="k-line" d="${kLine}"/>
@@ -288,19 +308,14 @@ document.querySelectorAll('#override button').forEach(b => {
   b.addEventListener('click', () => setOverride(b.dataset.mode));
 });
 
-async function toggleDismiss(active) {
+async function dismissToday() {
+  if (!confirm('Done for today? The schedule will not run again until tomorrow.')) return;
   try {
-    await fetch('/api/dismiss', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ active }),
-    });
+    await fetch('/api/dismiss', { method: 'POST' });
     tickStatus();
   } catch (e) { toast('dismiss failed'); }
 }
-$('#dismiss').addEventListener('click', () => {
-  const active = !$('#dismiss').classList.contains('on');
-  toggleDismiss(active);
-});
+$('#dismiss').addEventListener('click', dismissToday);
 
 $('#add').addEventListener('click', () => {
   const last = state.points[state.points.length - 1];
@@ -311,22 +326,39 @@ $('#add').addEventListener('click', () => {
 $('#reload').addEventListener('click', load);
 $('#save').addEventListener('click', save);
 
+function describeState(j) {
+  const out = `${j.brightness_pct}% @ ${j.cct_k} K`;
+  switch (j.state) {
+    case 'ramping':   return { label: 'Ramping',   detail: `→ ${out}` };
+    case 'holding':   return { label: 'Holding',   detail: `at ${out}` };
+    case 'manual':    return { label: 'Manual',    detail: out };
+    case 'on':        return { label: 'On',        detail: out };
+    case 'off':       return { label: 'Off',       detail: '' };
+    case 'dismissed': return { label: 'Done',      detail: 'resumes tomorrow' };
+    case 'idle':      return { label: 'Idle',      detail: 'waiting for next ramp' };
+    case 'no_time':   return { label: 'No time',   detail: 'waiting for sync' };
+    default:          return { label: j.state || '—', detail: '' };
+  }
+}
+
 async function tickStatus() {
   try {
     const r = await fetch('/api/status');
     const j = await r.json();
-    const parts = [
-      `<b>${j.now}</b>`,
-      j.time_valid ? '' : '<span style="color:var(--danger)">time not synced</span>',
-      j.active ? `ramping → <b>${j.brightness_pct}%</b> @ <b>${j.cct_k}K</b>` : 'idle',
-    ].filter(Boolean);
-    $('#status').innerHTML = parts.join(' · ');
+    const { label, detail } = describeState(j);
+    const time = j.now ? j.now.split(' ')[1] : '';
+    $('#status').innerHTML =
+      `<span class="dot ${j.state}"></span>` +
+      `<span class="label">${label}</span>` +
+      (detail ? `<span class="detail">${detail}</span>` : '') +
+      `<span class="time">${time}</span>`;
     $('#sub').textContent = j.time_valid ? 'connected' : 'waiting for time sync';
     if (j.override) setOverrideUI(j.override);
     const dismissed = !!j.dismissed;
-    $('#dismiss').classList.toggle('on', dismissed);
-    $('#dismiss').textContent = dismissed ? 'Resume today' : 'Done for today';
-    $('#dismissNote').textContent = dismissed ? 'ramp suppressed · resumes tomorrow' : '';
+    const btn = $('#dismiss');
+    btn.disabled = dismissed;
+    btn.textContent = dismissed ? 'Done ✓' : 'Done for today';
+    $('#dismissNote').textContent = dismissed ? 'schedule off · resumes tomorrow' : '';
   } catch (e) {
     $('#status').textContent = 'status unavailable';
   }

@@ -1,6 +1,7 @@
 #include "schedule.h"
 
 #include "cJSON.h"
+#include "dismiss.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -9,6 +10,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 static const char *TAG = "sched";
 static const char *NVS_NS = "wakelight";
@@ -107,6 +109,17 @@ bool schedule_save(schedule_t *s) {
   xSemaphoreTake(g_lock, portMAX_DELAY);
   g_cur = *s;
   xSemaphoreGive(g_lock);
+
+  // If the new schedule's first waypoint is later today, drop any "done for
+  // today" — saving a forward-looking schedule is the user's signal they
+  // want it to fire.
+  if (s->enabled && s->count > 0) {
+    time_t now = time(NULL);
+    struct tm lt;
+    localtime_r(&now, &lt);
+    uint16_t mod_now = lt.tm_hour * 60 + lt.tm_min;
+    if (s->points[0].minute_of_day > mod_now) dismiss_reset();
+  }
   return true;
 }
 

@@ -163,7 +163,18 @@ function push() {
 }
 [bEl, kEl, gEl].forEach(el => el.addEventListener('input', () => { refresh(); push(); }));
 
-refresh();
+async function seedFromStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const j = await r.json();
+    if (typeof j.brightness_pct === 'number') bEl.value = j.brightness_pct;
+    if (typeof j.cct_k === 'number')          kEl.value = j.cct_k;
+    if (typeof j.gm === 'number')             gEl.value = j.gm;
+    refresh();
+  } catch (e) { /* leave defaults */ }
+}
+
+seedFromStatus();
 connect();
 </script>
 </body>
