@@ -15,20 +15,19 @@
 
 static const char *TAG = "http";
 
-extern const char index_html_data[];
+extern const unsigned char index_html_data[];
 extern const size_t index_html_len;
-extern const char live_html_data[];
+extern const unsigned char live_html_data[];
 extern const size_t live_html_len;
 
-static esp_err_t root_get(httpd_req_t *req) {
+static esp_err_t send_gz_html(httpd_req_t *req, const unsigned char *buf, size_t len) {
   httpd_resp_set_type(req, "text/html; charset=utf-8");
-  return httpd_resp_send(req, index_html_data, index_html_len);
+  httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+  return httpd_resp_send(req, (const char *)buf, len);
 }
 
-static esp_err_t live_get(httpd_req_t *req) {
-  httpd_resp_set_type(req, "text/html; charset=utf-8");
-  return httpd_resp_send(req, live_html_data, live_html_len);
-}
+static esp_err_t root_get(httpd_req_t *req) { return send_gz_html(req, index_html_data, index_html_len); }
+static esp_err_t live_get(httpd_req_t *req) { return send_gz_html(req, live_html_data, live_html_len); }
 
 static esp_err_t schedule_get_h(httpd_req_t *req) {
   schedule_t s;
