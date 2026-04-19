@@ -1,6 +1,7 @@
 #include "http_ui.h"
 
 #include "cJSON.h"
+#include "dismiss.h"
 #include "dmx_out.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -70,12 +71,27 @@ static esp_err_t status_get_h(httpd_req_t *req) {
 
   schedule_t s;
   schedule_get(&s);
+  override_mode_t ov = override_get();
+  bool dism = dismiss_is_active();
+
+  // Mirror the ramp task's logic so the UI sees what actually goes to DMX.
   uint8_t byte = 0;
   uint16_t k = 2700;
-  bool active = schedule_eval(&s, mod, &byte, &k);
+  bool active = false;
+  if (ov == OVERRIDE_ON) { byte = 255; k = 4000; active = true; }
+  else if (ov == OVERRIDE_OFF) { byte = 0; k = 2700; active = false; }
+  else if (ov == OVERRIDE_MANUAL) {
+    uint8_t mp = 0; uint8_t gm = 128;
+    override_get_manual(&mp, &k, &gm);
+    byte = (mp >= 100) ? 255 : (uint8_t)((uint32_t)mp * 255 / 100);
+    active = true;
+  } else if (dism) {
+    byte = 0; k = 2700; active = false;
+  } else {
+    active = schedule_eval(&s, mod, &byte, &k);
+    if (!active) { byte = 0; k = 2700; }
+  }
   uint8_t pct = (uint8_t)((uint32_t)byte * 100 / 255);
-
-  override_mode_t ov = override_get();
 
   cJSON *root = cJSON_CreateObject();
   char tbuf[32];
@@ -87,6 +103,7 @@ static esp_err_t status_get_h(httpd_req_t *req) {
   cJSON_AddNumberToObject(root, "brightness_pct", pct);
   cJSON_AddNumberToObject(root, "cct_k", k);
   cJSON_AddStringToObject(root, "override", override_name(ov));
+  cJSON_AddBoolToObject(root, "dismissed", dism);
 
   char *out = cJSON_PrintUnformatted(root);
   cJSON_Delete(root);
@@ -199,6 +216,34 @@ static esp_err_t live_ws_h(httpd_req_t *req) {
   return ESP_OK;
 }
 
+static esp_err_t dismiss_post_h(httpd_req_t *req) {
+  // POST /api/dismiss  body: {"active":bool}. Missing/true = dismiss today,
+  // false = undo.
+  char body[64];
+  int n = req->content_len < (int)sizeof(body) - 1 ? req->content_len : (int)sizeof(body) - 1;
+  int total = 0;
+  while (total < n) {
+    int r = httpd_req_recv(req, body + total, n - total);
+    if (r <= 0) return httpd_resp_send_500(req);
+    total += r;
+  }
+  body[total] = 0;
+  bool active = true;
+  if (total > 0) {
+    cJSON *j = cJSON_Parse(body);
+    if (j) {
+      cJSON *a = cJSON_GetObjectItem(j, "active");
+      if (cJSON_IsBool(a)) active = cJSON_IsTrue(a);
+      cJSON_Delete(j);
+    }
+  }
+  if (active) dismiss_for_today(); else dismiss_clear();
+  ESP_LOGI(TAG, "dismiss -> %s", active ? "active" : "cleared");
+  httpd_resp_set_type(req, "application/json");
+  const char *r = active ? "{\"active\":true}" : "{\"active\":false}";
+  return httpd_resp_send(req, r, strlen(r));
+}
+
 static const httpd_uri_t uris[] = {
   {.uri = "/",              .method = HTTP_GET,  .handler = root_get},
   {.uri = "/live",          .method = HTTP_GET,  .handler = live_get},
@@ -206,6 +251,7 @@ static const httpd_uri_t uris[] = {
   {.uri = "/api/schedule",  .method = HTTP_PUT,  .handler = schedule_put_h},
   {.uri = "/api/status",    .method = HTTP_GET,  .handler = status_get_h},
   {.uri = "/api/override",  .method = HTTP_POST, .handler = override_post_h},
+  {.uri = "/api/dismiss",   .method = HTTP_POST, .handler = dismiss_post_h},
   {.uri = "/ws/live",       .method = HTTP_GET,  .handler = live_ws_h, .is_websocket = true},
 };
 

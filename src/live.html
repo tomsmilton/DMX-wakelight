@@ -6,63 +6,85 @@
 <title>Wakelight · Live</title>
 <style>
   :root {
-    color-scheme: dark;
-    --bg: #0e0f12;
-    --panel: #181a20;
-    --panel2: #23262f;
-    --line: #2b2e38;
-    --text: #e8e8ea;
-    --muted: #9aa0ab;
-    --accent: #ffb84d;
-    --danger: #ff6b6b;
+    color-scheme: light;
+    --bg: #f5f0e8;
+    --bg-grad: #ecdfcd;
+    --panel: #fdfaf4;
+    --panel2: #f2ead9;
+    --line: #d8ccb5;
+    --line-soft: #e6dbc7;
+    --text: #2b2620;
+    --muted: #8a7d6b;
+    --accent: #cc5500;
+    --accent-warm: #d9724a;
+    --accent-ink: #ffffff;
+    --ok: #6a8f3a;
+    --danger: #b64a3a;
+    --shadow: 0 1px 2px rgba(58, 43, 24, 0.06), 0 4px 14px rgba(58, 43, 24, 0.07);
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
-    font: 15px/1.4 -apple-system, system-ui, sans-serif; }
-  main { max-width: 560px; margin: 0 auto; padding: max(env(safe-area-inset-top), 16px) 16px 48px; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
-  .nav { margin-bottom: 16px; }
+  html, body { margin: 0; padding: 0; color: var(--text);
+    background: radial-gradient(1200px 700px at 10% -10%, var(--bg-grad), var(--bg) 55%);
+    background-attachment: fixed;
+    font: 16px/1.5 -apple-system, system-ui, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased; }
+  main { max-width: 560px; margin: 0 auto; padding: max(env(safe-area-inset-top), 20px) 18px 56px; }
+  h1 { font: 600 30px/1.1 ui-serif, "Iowan Old Style", "Apple Garamond", Georgia, serif;
+    letter-spacing: -0.01em; margin: 0 0 2px; }
+  h1 .mark { color: var(--accent); font-style: italic; font-weight: 500; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 20px; font-style: italic; }
+  .nav { margin-bottom: 18px; }
   .nav a {
-    display: inline-block; background: var(--panel2); color: var(--text);
-    text-decoration: none; border: 1px solid var(--line); padding: 8px 12px;
-    border-radius: 8px; font-size: 13px;
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--panel); color: var(--accent);
+    text-decoration: none; border: 1px solid var(--line-soft); padding: 8px 14px;
+    border-radius: 999px; font-size: 13px; font-weight: 500;
+    box-shadow: var(--shadow);
+    transition: transform .1s;
   }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-    padding: 16px; margin-bottom: 16px; }
+  .nav a:hover { transform: translateX(-2px); }
+  .card { background: var(--panel); border: 1px solid var(--line-soft); border-radius: 14px;
+    padding: 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
   .slider { display: flex; flex-direction: column; gap: 8px; }
-  .slider + .slider { margin-top: 20px; }
+  .slider + .slider { margin-top: 22px; }
   .label-row { display: flex; justify-content: space-between; align-items: baseline; }
-  .label-row label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
-  .label-row .value { font-size: 16px; font-weight: 600; }
+  .label-row label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: 600; }
+  .label-row .value { font-size: 17px; font-weight: 600; color: var(--text);
+    font-variant-numeric: tabular-nums; }
   input[type=range] {
     -webkit-appearance: none; appearance: none; width: 100%; height: 32px; background: transparent;
   }
   input[type=range]::-webkit-slider-runnable-track {
-    height: 6px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line);
+    height: 8px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line-soft);
   }
   input[type=range]::-webkit-slider-thumb {
-    -webkit-appearance: none; appearance: none; width: 26px; height: 26px; border-radius: 50%;
-    background: var(--accent); margin-top: -11px; border: 0;
+    -webkit-appearance: none; appearance: none; width: 28px; height: 28px; border-radius: 50%;
+    background: var(--panel); margin-top: -11px; border: 2px solid var(--accent);
+    box-shadow: 0 2px 6px rgba(58, 43, 24, 0.18);
   }
-  input[type=range]::-moz-range-track { height: 6px; border-radius: 999px; background: var(--panel2); }
-  input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); border: 0; }
-  /* Fill-the-track gradient showing the warm-to-cool range for CCT */
+  input[type=range]::-moz-range-track { height: 8px; border-radius: 999px; background: var(--panel2); }
+  input[type=range]::-moz-range-thumb { width: 28px; height: 28px; border-radius: 50%;
+    background: var(--panel); border: 2px solid var(--accent); }
   .cct-track input[type=range]::-webkit-slider-runnable-track {
-    background: linear-gradient(to right, #ffb070, #ffd9b3, #ffffff, #bfd5ff, #88b3ff);
+    background: linear-gradient(to right, #ffb070, #ffd9b3, #ffffff, #cfdcff, #9fb6ea);
+    border-color: var(--line-soft);
   }
   .gm-track input[type=range]::-webkit-slider-runnable-track {
-    background: linear-gradient(to right, #7ecf7e, #ffffff, #e47fe4);
+    background: linear-gradient(to right, #9ecf8b, #fdfaf4, #d784c8);
+    border-color: var(--line-soft);
   }
-  .conn { font-size: 12px; color: var(--muted); margin-top: 8px; }
-  .conn.on  { color: #6fce7a; }
+  .conn { font-size: 12px; color: var(--muted); margin-top: 14px; font-variant-numeric: tabular-nums;
+    display: inline-flex; align-items: center; gap: 6px; }
+  .conn::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: currentColor; }
+  .conn.on  { color: var(--ok); }
   .conn.off { color: var(--danger); }
 </style>
 </head>
 <body>
 <main>
-  <h1>Wakelight · Live</h1>
-  <div class="sub">Direct control — schedule paused while this tab is open.</div>
+  <h1>Wake<span class="mark">light</span> · Live</h1>
+  <div class="sub">Direct control — schedule pauses while you play here.</div>
   <div class="nav"><a href="/">← Schedule</a></div>
 
   <div class="card">
