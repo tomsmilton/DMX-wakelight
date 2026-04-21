@@ -1,3 +1,4 @@
+#include "device_id.h"
 #include "dismiss.h"
 #include "dmx_out.h"
 #include "http_ui.h"
@@ -69,6 +70,7 @@ void app_main(void) {
   schedule_t s;
   schedule_load(&s);
   dismiss_init();
+  device_id_init();
 
   if (!wifi_sntp_start()) {
     ESP_LOGE(TAG, "wifi failed; continuing without network");

@@ -1,14 +1,19 @@
 #include "http_ui.h"
 
 #include "cJSON.h"
+#include "device_id.h"
 #include "dismiss.h"
 #include "dmx_out.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_netif.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "mdns.h"
 #include "override.h"
 #include "schedule.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -239,6 +244,9 @@ static esp_err_t dismiss_post_h(httpd_req_t *req) {
   return httpd_resp_send(req, r, strlen(r));
 }
 
+static esp_err_t device_get_h(httpd_req_t *req);
+static esp_err_t device_put_h(httpd_req_t *req);
+
 static const httpd_uri_t uris[] = {
   {.uri = "/",              .method = HTTP_GET,  .handler = root_get},
   {.uri = "/live",          .method = HTTP_GET,  .handler = live_get},
@@ -247,6 +255,8 @@ static const httpd_uri_t uris[] = {
   {.uri = "/api/status",    .method = HTTP_GET,  .handler = status_get_h},
   {.uri = "/api/override",  .method = HTTP_POST, .handler = override_post_h},
   {.uri = "/api/dismiss",   .method = HTTP_POST, .handler = dismiss_post_h},
+  {.uri = "/api/device",    .method = HTTP_GET,  .handler = device_get_h},
+  {.uri = "/api/device",    .method = HTTP_PUT,  .handler = device_put_h},
   {.uri = "/ws/live",       .method = HTTP_GET,  .handler = live_ws_h, .is_websocket = true},
 };
 
@@ -258,16 +268,159 @@ static void ws_close_fn(httpd_handle_t hd, int fd) {
   close(fd);
 }
 
+static bool get_my_ip4(uint32_t *out) {
+  esp_netif_t *nif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+  if (!nif) return false;
+  esp_netif_ip_info_t ip;
+  if (esp_netif_get_ip_info(nif, &ip) != ESP_OK) return false;
+  *out = ip.ip.addr;
+  return true;
+}
+
+// Returns true if someone else on the network already claims the given
+// hostname. A 250 ms probe is enough for same-LAN mDNS — longer makes boot slow.
+static bool hostname_taken(const char *host) {
+  esp_ip4_addr_t tmp;
+  esp_err_t r = mdns_query_a(host, 250, &tmp);
+  return r == ESP_OK;
+}
+
+// Same as hostname_taken but ignores self-responses (e.g. when we already
+// advertise the name). Used for rename clash detection.
+static bool hostname_taken_by_other(const char *host) {
+  esp_ip4_addr_t probed;
+  if (mdns_query_a(host, 250, &probed) != ESP_OK) return false;
+  uint32_t mine;
+  if (!get_my_ip4(&mine)) return true;  // can't tell → treat as conflict
+  return probed.addr != mine;
+}
+
+// Walk slug → slug-2 → slug-3 → … → default_host until we find a free name.
+// Writes the winner into `out` (size HOST_BUF).
+#define HOST_BUF 33
+static void pick_hostname(char *out) {
+  const char *slug = device_id_slug();
+  const char *def = device_id_default_hostname();
+  if (!hostname_taken(slug)) { snprintf(out, HOST_BUF, "%s", slug); return; }
+  for (int n = 2; n <= 9; n++) {
+    char cand[HOST_BUF];
+    snprintf(cand, sizeof(cand), "%s-%d", slug, n);
+    if (!hostname_taken(cand)) { snprintf(out, HOST_BUF, "%s", cand); return; }
+  }
+  snprintf(out, HOST_BUF, "%s", def);  // MAC-based, guaranteed unique
+}
+
+static void get_my_ipaddr(mdns_ip_addr_t *out) {
+  memset(out, 0, sizeof(*out));
+  uint32_t v4;
+  if (!get_my_ip4(&v4)) return;
+  out->addr.type = ESP_IPADDR_TYPE_V4;
+  out->addr.u_addr.ip4.addr = v4;
+  out->next = NULL;
+}
+
+// Opportunistic: if "wakelight.local" isn't taken (or we already hold it),
+// claim it as a delegate so any device can land on a picker.
+static void try_claim_wakelight(void) {
+  if (strcmp(device_id_chosen_hostname(), "wakelight") == 0) {
+    device_id_set_holds_wakelight(true);  // we already are wakelight.local
+    return;
+  }
+  if (device_id_holds_wakelight()) return;
+  if (hostname_taken("wakelight")) return;
+  mdns_ip_addr_t ip;
+  get_my_ipaddr(&ip);
+  if (ip.addr.u_addr.ip4.addr == 0) return;
+  esp_err_t r = mdns_delegate_hostname_add("wakelight", &ip);
+  if (r == ESP_OK) {
+    device_id_set_holds_wakelight(true);
+    ESP_LOGI(TAG, "claimed wakelight.local");
+  } else {
+    ESP_LOGW(TAG, "delegate add failed: %d", r);
+  }
+}
+
+static void apply_mdns_identity(void) {
+  char chosen[HOST_BUF];
+  pick_hostname(chosen);
+  mdns_hostname_set(chosen);
+  mdns_instance_name_set(device_id_name());
+  device_id_set_chosen_hostname(chosen);
+  ESP_LOGI(TAG, "mdns: http://%s.local/ (name \"%s\")", chosen, device_id_name());
+  try_claim_wakelight();
+}
+
+static void mdns_refresh_task(void *arg) {
+  (void)arg;
+  while (1) {
+    vTaskDelay(pdMS_TO_TICKS(5 * 60 * 1000));  // 5 min
+    try_claim_wakelight();
+  }
+}
+
 static void start_mdns(void) {
   esp_err_t err = mdns_init();
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "mdns_init failed: %d", err);
     return;
   }
-  mdns_hostname_set("wakelight");
-  mdns_instance_name_set("Wakelight");
+  apply_mdns_identity();
   mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
-  ESP_LOGI(TAG, "mdns: http://wakelight.local/");
+  xTaskCreate(mdns_refresh_task, "mdns-refresh", 3072, NULL, 2, NULL);
+}
+
+static esp_err_t device_get_h(httpd_req_t *req) {
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "name", device_id_name());
+  cJSON_AddStringToObject(root, "slug", device_id_slug());
+  cJSON_AddStringToObject(root, "hostname", device_id_chosen_hostname());
+  cJSON_AddStringToObject(root, "default_hostname", device_id_default_hostname());
+  cJSON_AddBoolToObject(root, "holds_wakelight", device_id_holds_wakelight());
+  char *out = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+  if (!out) return httpd_resp_send_500(req);
+  httpd_resp_set_type(req, "application/json");
+  esp_err_t r = httpd_resp_send(req, out, strlen(out));
+  free(out);
+  return r;
+}
+
+static esp_err_t device_put_h(httpd_req_t *req) {
+  if (req->content_len > 256) {
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body too big");
+  }
+  char body[257];
+  int total = 0;
+  while (total < req->content_len) {
+    int r = httpd_req_recv(req, body + total, req->content_len - total);
+    if (r <= 0) return httpd_resp_send_500(req);
+    total += r;
+  }
+  body[total] = 0;
+  cJSON *root = cJSON_Parse(body);
+  if (!root) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json");
+  cJSON *name = cJSON_GetObjectItem(root, "name");
+  if (!cJSON_IsString(name)) {
+    cJSON_Delete(root);
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid name");
+  }
+  char prospective[33];
+  device_id_slug_for(name->valuestring, prospective, sizeof(prospective));
+  // Skip the probe if the slug is what we already publish — otherwise we'd
+  // see our own A-record and reject a no-op rename.
+  if (strcmp(prospective, device_id_chosen_hostname()) != 0 &&
+      hostname_taken_by_other(prospective)) {
+    cJSON_Delete(root);
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_set_type(req, "application/json");
+    const char *msg = "{\"error\":\"name_taken\"}";
+    return httpd_resp_send(req, msg, strlen(msg));
+  }
+  bool ok = device_id_set_name(name->valuestring);
+  cJSON_Delete(root);
+  if (!ok) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid name");
+  apply_mdns_identity();
+  return device_get_h(req);
 }
 
 void http_ui_start(void) {

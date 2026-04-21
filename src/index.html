@@ -37,12 +37,12 @@
   .row { display: flex; gap: 10px; align-items: center; }
   .row + .row { margin-top: 10px; }
   label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: 600; }
-  input[type=time], input[type=number] {
+  input[type=time], input[type=number], input[type=text] {
     background: var(--panel2); border: 1px solid var(--line); color: var(--text);
     border-radius: 8px; padding: 9px 10px; font: inherit; width: 100%;
     transition: border-color .15s, box-shadow .15s;
   }
-  input[type=time]:focus, input[type=number]:focus {
+  input[type=time]:focus, input[type=number]:focus, input[type=text]:focus {
     outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(204, 85, 0, .14);
   }
   input[type=time] { min-width: 110px; }
@@ -130,6 +130,14 @@
 <main>
   <h1>Wake<span class="mark">light</span></h1>
   <div class="sub" id="sub">loading…</div>
+  <div class="card" id="deviceCard">
+    <label for="deviceName" style="display:block;margin-bottom:6px">This lamp</label>
+    <div class="row">
+      <input type="text" id="deviceName" maxlength="48" placeholder="Bedroom">
+      <button class="ghost" id="deviceSave">save</button>
+    </div>
+    <div class="dismiss-note" id="deviceUrl" style="margin-top:8px"></div>
+  </div>
   <div class="status-pill" id="status">…</div>
   <div class="nav"><a href="/live">Live control →</a></div>
 
@@ -325,6 +333,37 @@ $('#add').addEventListener('click', () => {
 });
 $('#reload').addEventListener('click', load);
 $('#save').addEventListener('click', save);
+
+async function loadDevice() {
+  try {
+    const r = await fetch('/api/device');
+    const j = await r.json();
+    $('#deviceName').value = j.name || '';
+    const parts = [`Reach me at ${j.hostname}.local`];
+    if (j.slug && j.slug !== j.hostname) {
+      parts.push(`(wanted ${j.slug}.local — taken by another device)`);
+    }
+    if (j.holds_wakelight && j.hostname !== 'wakelight') {
+      parts.push('— also serves wakelight.local');
+    }
+    $('#deviceUrl').textContent = parts.join(' ');
+    document.title = `Wakelight — ${j.name || j.hostname}`;
+  } catch (e) { /* offline ok */ }
+}
+async function saveDevice() {
+  const name = $('#deviceName').value.trim();
+  if (!name) { toast('name required'); return; }
+  const r = await fetch('/api/device', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ name }),
+  });
+  if (r.status === 409) { toast('name taken by another lamp'); return; }
+  if (!r.ok) { toast('rename failed'); return; }
+  await loadDevice();
+  toast('renamed');
+}
+$('#deviceSave').addEventListener('click', saveDevice);
+loadDevice();
 
 function describeState(j) {
   const out = `${j.brightness_pct}% @ ${j.cct_k} K`;
