@@ -66,6 +66,10 @@
   button.del { background: transparent; color: var(--danger); border: 1px solid var(--line);
     padding: 8px 10px; box-shadow: none; border-radius: 8px; }
   button.del:hover { background: rgba(182, 74, 58, .08); }
+  button.link { background: transparent; color: var(--muted); border: 1px solid var(--line);
+    padding: 8px 12px; box-shadow: none; border-radius: 8px; font-weight: 500; }
+  button.link:hover { background: var(--panel2); }
+  button.link.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
   .toggle { display: flex; align-items: center; gap: 10px; }
   .toggle input { width: 22px; height: 22px; accent-color: var(--accent); }
@@ -157,6 +161,7 @@
     <svg class="graph" id="graph" viewBox="0 0 520 160" preserveAspectRatio="none" aria-hidden="true"></svg>
     <div id="points"></div>
     <div class="actions">
+      <button class="link" id="link" title="link times: shift all when one moves" aria-pressed="false">🔗 link times</button>
       <button class="ghost" id="add">+ waypoint</button>
     </div>
   </div>
@@ -174,6 +179,7 @@
 const $ = s => document.querySelector(s);
 const ptsEl = $('#points');
 let state = { enabled: false, points: [] };
+let linked = false;
 
 function modToHHMM(m) {
   const h = Math.floor(m / 60), mm = m % 60;
@@ -244,8 +250,23 @@ function render() {
     d.querySelectorAll('input').forEach(inp => {
       inp.addEventListener('change', () => {
         const k = inp.dataset.k;
-        if (k === 'm') p.m = hhmmToMod(inp.value);
-        else p[k] = Number(inp.value);
+        if (k === 'm') {
+          const next = hhmmToMod(inp.value);
+          if (linked && state.points.length > 1) {
+            let delta = next - p.m;
+            const lo = Math.min(...state.points.map(q => q.m));
+            const hi = Math.max(...state.points.map(q => q.m));
+            delta = Math.max(-lo, Math.min(1439 - hi, delta));
+            state.points.forEach(q => { q.m = q.m + delta; });
+            render();
+          } else {
+            p.m = next;
+            renderGraph();
+          }
+        } else {
+          p[k] = Number(inp.value);
+          renderGraph();
+        }
       });
     });
     d.querySelector('.del').addEventListener('click', () => {
@@ -325,6 +346,12 @@ $('#add').addEventListener('click', () => {
 });
 $('#reload').addEventListener('click', load);
 $('#save').addEventListener('click', save);
+$('#link').addEventListener('click', () => {
+  linked = !linked;
+  const b = $('#link');
+  b.classList.toggle('active', linked);
+  b.setAttribute('aria-pressed', linked ? 'true' : 'false');
+});
 
 function describeState(j) {
   const out = `${j.brightness_pct}% @ ${j.cct_k} K`;
