@@ -70,6 +70,13 @@
     padding: 8px 12px; box-shadow: none; border-radius: 8px; font-weight: 500; }
   button.link:hover { background: var(--panel2); }
   button.link.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button#save.dirty { box-shadow: 0 0 0 3px rgba(204, 85, 0, .25), 0 2px 10px rgba(204, 85, 0, .15); }
+  button#save.dirty::before { content: "• "; }
+  .cct-wrap { position: relative; }
+  .cct-swatch { position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+    width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--line);
+    pointer-events: none; }
+  .cct-wrap input[type=number] { padding-right: 32px; }
   .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
   .toggle { display: flex; align-items: center; gap: 10px; }
   .toggle input { width: 22px; height: 22px; accent-color: var(--accent); }
@@ -181,6 +188,21 @@ const $ = s => document.querySelector(s);
 const ptsEl = $('#points');
 let state = { enabled: false, points: [] };
 let linked = false;
+let dirty = false;
+
+function cctColor(k) {
+  const t = Math.max(0, Math.min(1, (k - 2500) / 7500));
+  if (t < 0.15) return '#ffb070';
+  if (t < 0.35) return '#ffd9a6';
+  if (t < 0.55) return '#fff5d0';
+  if (t < 0.75) return '#e9efff';
+  return '#bfd5ff';
+}
+
+function setDirty(v) {
+  dirty = v;
+  $('#save').classList.toggle('dirty', v);
+}
 
 function modToHHMM(m) {
   const h = Math.floor(m / 60), mm = m % 60;
@@ -204,14 +226,6 @@ function renderGraph() {
   const x = m => PAD_L + (W - PAD_L - PAD_R) * (m - t0) / span;
   const yB = b => H - PAD_B - (H - PAD_T - PAD_B) * b / 100;
   const yK = k => H - PAD_B - (H - PAD_T - PAD_B) * (k - 2500) / 7500;
-  const cctColor = k => {
-    const t = Math.max(0, Math.min(1, (k - 2500) / 7500));
-    if (t < 0.15) return '#ffb070';
-    if (t < 0.35) return '#ffd9a6';
-    if (t < 0.55) return '#fff5d0';
-    if (t < 0.75) return '#e9efff';
-    return '#bfd5ff';
-  };
   const bLine = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.m).toFixed(1)},${yB(p.b).toFixed(1)}`).join(' ');
   const bArea = `${bLine} L${x(t1).toFixed(1)},${(H - PAD_B).toFixed(1)} L${x(t0).toFixed(1)},${(H - PAD_B).toFixed(1)} Z`;
   const kLine = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.m).toFixed(1)},${yK(p.k).toFixed(1)}`).join(' ');
@@ -245,9 +259,10 @@ function render() {
     d.innerHTML = `
       <div><label>time</label><input type="time" value="${modToHHMM(p.m)}" data-k="m"></div>
       <div><label>bright %</label><input type="number" min="0" max="100" value="${p.b}" data-k="b"></div>
-      <div><label>colour K</label><input type="number" min="2500" max="10000" step="50" value="${p.k}" data-k="k"></div>
+      <div class="cct-wrap"><label>colour K</label><input type="number" min="2500" max="10000" step="50" value="${p.k}" data-k="k"><span class="cct-swatch" style="background:${cctColor(p.k)}"></span></div>
       <button class="del" title="remove">✕</button>
     `;
+    const swatch = d.querySelector('.cct-swatch');
     d.querySelectorAll('input').forEach(inp => {
       inp.addEventListener('change', () => {
         const k = inp.dataset.k;
@@ -266,12 +281,14 @@ function render() {
           }
         } else {
           p[k] = Number(inp.value);
+          if (k === 'k') swatch.style.background = cctColor(p.k);
           renderGraph();
         }
+        setDirty(true);
       });
     });
     d.querySelector('.del').addEventListener('click', () => {
-      state.points.splice(i, 1); render();
+      state.points.splice(i, 1); render(); setDirty(true);
     });
     ptsEl.appendChild(d);
   });
@@ -293,6 +310,7 @@ async function load() {
   state.enabled = !!j.enabled;
   state.points = (j.points || []).map(p => ({ m: p.m, b: p.b, k: p.k }));
   render();
+  setDirty(false);
 }
 
 async function save() {
@@ -309,6 +327,7 @@ async function save() {
   state.enabled = !!j.enabled;
   state.points = (j.points || []).map(p => ({ m: p.m, b: p.b, k: p.k }));
   render();
+  setDirty(false);
   toast('saved');
 }
 
@@ -344,7 +363,9 @@ $('#add').addEventListener('click', () => {
   const base = last ? last.m + 15 : 7 * 60;
   state.points.push({ m: Math.min(base, 1439), b: last ? Math.min(100, last.b + 20) : 50, k: last ? last.k : 4000 });
   render();
+  setDirty(true);
 });
+$('#enabled').addEventListener('change', () => setDirty(true));
 const DEFAULT_RAMP = [
   { m: 6*60+30, b: 0,   k: 2500 },
   { m: 6*60+40, b: 10,  k: 3000 },
@@ -356,6 +377,7 @@ $('#defaultRamp').addEventListener('click', () => {
   if (state.points.length && !confirm('Replace current waypoints with the default ramp?')) return;
   state.points = DEFAULT_RAMP.map(p => ({ ...p }));
   render();
+  setDirty(true);
 });
 $('#reload').addEventListener('click', load);
 $('#save').addEventListener('click', save);
