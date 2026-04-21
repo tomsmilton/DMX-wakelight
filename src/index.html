@@ -162,6 +162,7 @@
     <div id="points"></div>
     <div class="actions">
       <button class="link" id="link" title="link times: shift all when one moves" aria-pressed="false">🔗 link times</button>
+      <button class="ghost" id="defaultRamp">default ramp</button>
       <button class="ghost" id="add">+ waypoint</button>
     </div>
   </div>
@@ -342,6 +343,18 @@ $('#add').addEventListener('click', () => {
   const last = state.points[state.points.length - 1];
   const base = last ? last.m + 15 : 7 * 60;
   state.points.push({ m: Math.min(base, 1439), b: last ? Math.min(100, last.b + 20) : 50, k: last ? last.k : 4000 });
+  render();
+});
+const DEFAULT_RAMP = [
+  { m: 6*60+30, b: 0,   k: 2500 },
+  { m: 6*60+40, b: 10,  k: 3000 },
+  { m: 6*60+50, b: 30,  k: 3000 },
+  { m: 6*60+55, b: 50,  k: 3000 },
+  { m: 7*60+0,  b: 100, k: 3000 },
+];
+$('#defaultRamp').addEventListener('click', () => {
+  if (state.points.length && !confirm('Replace current waypoints with the default ramp?')) return;
+  state.points = DEFAULT_RAMP.map(p => ({ ...p }));
   render();
 });
 $('#reload').addEventListener('click', load);
