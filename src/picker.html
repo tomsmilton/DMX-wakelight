@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Wakelights</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f5f0e8; --bg-grad: #ecdfcd;
+    --panel: #fdfaf4; --panel2: #f2ead9;
+    --line: #d8ccb5; --line-soft: #e6dbc7;
+    --text: #2b2620; --muted: #8a7d6b;
+    --accent: #cc5500;
+    --shadow: 0 1px 2px rgba(58, 43, 24, 0.06), 0 4px 14px rgba(58, 43, 24, 0.07);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; color: var(--text);
+    background: radial-gradient(1200px 700px at 10% -10%, var(--bg-grad), var(--bg) 55%);
+    background-attachment: fixed;
+    font: 16px/1.5 -apple-system, system-ui, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased; }
+  main { max-width: 560px; margin: 0 auto; padding: max(env(safe-area-inset-top), 20px) 18px 56px; }
+  h1 { font: 600 30px/1.1 ui-serif, "Iowan Old Style", "Apple Garamond", Georgia, serif;
+    letter-spacing: -0.01em; margin: 0 0 2px; color: var(--text); }
+  h1 .mark { color: var(--accent); font-style: italic; font-weight: 500; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 20px; font-style: italic; }
+  .empty { color: var(--muted); font-size: 14px; padding: 24px; text-align: center; font-style: italic; }
+  ul.peers { list-style: none; margin: 0; padding: 0; }
+  li.peer + li.peer { margin-top: 8px; }
+  a.peer {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--panel); border: 1px solid var(--line-soft); border-radius: 12px;
+    padding: 14px 16px; text-decoration: none; color: var(--text);
+    box-shadow: var(--shadow);
+    transition: transform .1s, border-color .1s;
+  }
+  a.peer:hover { border-color: var(--accent); transform: translateX(2px); }
+  a.peer .name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  a.peer .host { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  a.peer .arrow { color: var(--accent); font-size: 18px; line-height: 1; }
+  a.peer.self { border-style: dashed; }
+  a.peer.self::after { content: "this lamp"; color: var(--muted); font-size: 11px;
+    text-transform: uppercase; letter-spacing: .08em; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Wake<span class="mark">lights</span></h1>
+  <div class="sub">choose a lamp on this network</div>
+  <ul class="peers" id="peers">
+    <li class="empty">discovering…</li>
+  </ul>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+async function load() {
+  const list = $('#peers');
+  try {
+    const r = await fetch('/api/peers');
+    const j = await r.json();
+    if (!j.peers || !j.peers.length) {
+      list.innerHTML = '<li class="empty">no wakelights found</li>';
+      return;
+    }
+    list.innerHTML = '';
+    for (const p of j.peers) {
+      const host = `${p.slug}.local`;
+      const li = document.createElement('li');
+      li.className = 'peer';
+      const a = document.createElement('a');
+      a.className = 'peer' + (p.self ? ' self' : '');
+      a.href = `http://${host}/`;
+      a.innerHTML = `<span class="name"></span><span class="host"></span><span class="arrow">›</span>`;
+      a.querySelector('.name').textContent = p.name || p.slug;
+      a.querySelector('.host').textContent = host;
+      li.appendChild(a);
+      list.appendChild(li);
+    }
+  } catch (e) {
+    list.innerHTML = '<li class="empty">discovery failed</li>';
+  }
+}
+load();
+</script>
+</body>
+</html>

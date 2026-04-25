@@ -10,8 +10,9 @@ import os
 from pathlib import Path
 
 PAGES = [
-    ("index.html", "index_html"),
-    ("live.html",  "live_html"),
+    ("index.html",  "index_html"),
+    ("live.html",   "live_html"),
+    ("picker.html", "picker_html"),
 ]
 
 

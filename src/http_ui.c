@@ -1,14 +1,19 @@
 #include "http_ui.h"
 
 #include "cJSON.h"
+#include "device_id.h"
 #include "dismiss.h"
 #include "dmx_out.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_netif.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "mdns.h"
 #include "override.h"
 #include "schedule.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -19,6 +24,8 @@ extern const unsigned char index_html_data[];
 extern const size_t index_html_len;
 extern const unsigned char live_html_data[];
 extern const size_t live_html_len;
+extern const unsigned char picker_html_data[];
+extern const size_t picker_html_len;
 
 static esp_err_t send_gz_html(httpd_req_t *req, const unsigned char *buf, size_t len) {
   httpd_resp_set_type(req, "text/html; charset=utf-8");
@@ -26,7 +33,27 @@ static esp_err_t send_gz_html(httpd_req_t *req, const unsigned char *buf, size_t
   return httpd_resp_send(req, (const char *)buf, len);
 }
 
-static esp_err_t root_get(httpd_req_t *req) { return send_gz_html(req, index_html_data, index_html_len); }
+// `/` serves the picker only when the request came in via the wakelight.local
+// delegate hostname (i.e. the device's own slug isn't literally "wakelight").
+// All other accesses — slug.local, default-host.local, IP — get the schedule
+// page as before.
+static bool host_is_delegate(httpd_req_t *req) {
+  if (strcmp(device_id_chosen_hostname(), "wakelight") == 0) return false;
+  size_t need = httpd_req_get_hdr_value_len(req, "Host");
+  if (need == 0 || need > 64) return false;
+  char host[65];
+  if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK) return false;
+  char *colon = strchr(host, ':');
+  if (colon) *colon = 0;
+  return strcasecmp(host, "wakelight.local") == 0;
+}
+
+static esp_err_t root_get(httpd_req_t *req) {
+  if (host_is_delegate(req)) {
+    return send_gz_html(req, picker_html_data, picker_html_len);
+  }
+  return send_gz_html(req, index_html_data, index_html_len);
+}
 static esp_err_t live_get(httpd_req_t *req) { return send_gz_html(req, live_html_data, live_html_len); }
 
 static esp_err_t schedule_get_h(httpd_req_t *req) {
@@ -239,6 +266,10 @@ static esp_err_t dismiss_post_h(httpd_req_t *req) {
   return httpd_resp_send(req, r, strlen(r));
 }
 
+static esp_err_t device_get_h(httpd_req_t *req);
+static esp_err_t device_put_h(httpd_req_t *req);
+static esp_err_t peers_get_h(httpd_req_t *req);
+
 static const httpd_uri_t uris[] = {
   {.uri = "/",              .method = HTTP_GET,  .handler = root_get},
   {.uri = "/live",          .method = HTTP_GET,  .handler = live_get},
@@ -247,6 +278,9 @@ static const httpd_uri_t uris[] = {
   {.uri = "/api/status",    .method = HTTP_GET,  .handler = status_get_h},
   {.uri = "/api/override",  .method = HTTP_POST, .handler = override_post_h},
   {.uri = "/api/dismiss",   .method = HTTP_POST, .handler = dismiss_post_h},
+  {.uri = "/api/device",    .method = HTTP_GET,  .handler = device_get_h},
+  {.uri = "/api/device",    .method = HTTP_PUT,  .handler = device_put_h},
+  {.uri = "/api/peers",     .method = HTTP_GET,  .handler = peers_get_h},
   {.uri = "/ws/live",       .method = HTTP_GET,  .handler = live_ws_h, .is_websocket = true},
 };
 
@@ -258,16 +292,231 @@ static void ws_close_fn(httpd_handle_t hd, int fd) {
   close(fd);
 }
 
+static bool get_my_ip4(uint32_t *out) {
+  esp_netif_t *nif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+  if (!nif) return false;
+  esp_netif_ip_info_t ip;
+  if (esp_netif_get_ip_info(nif, &ip) != ESP_OK) return false;
+  *out = ip.ip.addr;
+  return true;
+}
+
+// Returns true if someone else on the network already claims the given
+// hostname. A 250 ms probe is enough for same-LAN mDNS — longer makes boot slow.
+static bool hostname_taken(const char *host) {
+  esp_ip4_addr_t tmp;
+  esp_err_t r = mdns_query_a(host, 250, &tmp);
+  return r == ESP_OK;
+}
+
+// Same as hostname_taken but ignores self-responses (e.g. when we already
+// advertise the name). Used for rename clash detection.
+static bool hostname_taken_by_other(const char *host) {
+  esp_ip4_addr_t probed;
+  if (mdns_query_a(host, 250, &probed) != ESP_OK) return false;
+  uint32_t mine;
+  if (!get_my_ip4(&mine)) return true;  // can't tell → treat as conflict
+  return probed.addr != mine;
+}
+
+// Walk slug → slug-2 → slug-3 → … → default_host until we find a free name.
+// Writes the winner into `out` (size HOST_BUF).
+#define HOST_BUF 33
+static void pick_hostname(char *out) {
+  const char *slug = device_id_slug();
+  const char *def = device_id_default_hostname();
+  if (!hostname_taken(slug)) { snprintf(out, HOST_BUF, "%s", slug); return; }
+  for (int n = 2; n <= 9; n++) {
+    char cand[HOST_BUF];
+    snprintf(cand, sizeof(cand), "%s-%d", slug, n);
+    if (!hostname_taken(cand)) { snprintf(out, HOST_BUF, "%s", cand); return; }
+  }
+  snprintf(out, HOST_BUF, "%s", def);  // MAC-based, guaranteed unique
+}
+
+static void get_my_ipaddr(mdns_ip_addr_t *out) {
+  memset(out, 0, sizeof(*out));
+  uint32_t v4;
+  if (!get_my_ip4(&v4)) return;
+  out->addr.type = ESP_IPADDR_TYPE_V4;
+  out->addr.u_addr.ip4.addr = v4;
+  out->next = NULL;
+}
+
+// Opportunistic: if "wakelight.local" isn't taken (or we already hold it),
+// claim it as a delegate so any device can land on a picker.
+static void try_claim_wakelight(void) {
+  if (strcmp(device_id_chosen_hostname(), "wakelight") == 0) {
+    device_id_set_holds_wakelight(true);  // we already are wakelight.local
+    return;
+  }
+  if (device_id_holds_wakelight()) return;
+  if (hostname_taken("wakelight")) return;
+  mdns_ip_addr_t ip;
+  get_my_ipaddr(&ip);
+  if (ip.addr.u_addr.ip4.addr == 0) return;
+  esp_err_t r = mdns_delegate_hostname_add("wakelight", &ip);
+  if (r == ESP_OK) {
+    device_id_set_holds_wakelight(true);
+    ESP_LOGI(TAG, "claimed wakelight.local");
+  } else {
+    ESP_LOGW(TAG, "delegate add failed: %d", r);
+  }
+}
+
+// Refresh the TXT records on _wakelight._tcp so peer discovery sees the
+// current friendly name + slug. Safe to call before service_add (no-op then).
+static void update_wakelight_txt(void) {
+  mdns_txt_item_t items[] = {
+    {"name", (char *)device_id_name()},
+    {"slug", (char *)device_id_slug()},
+  };
+  mdns_service_txt_set("_wakelight", "_tcp", items, sizeof(items) / sizeof(items[0]));
+}
+
+// Sets hostname + instance; safe to call before services are added (boot)
+// and after them (rename). Caller is responsible for update_wakelight_txt()
+// once the _wakelight._tcp service exists.
+static void apply_mdns_identity(void) {
+  char chosen[HOST_BUF];
+  pick_hostname(chosen);
+  mdns_hostname_set(chosen);
+  mdns_instance_name_set(device_id_name());
+  device_id_set_chosen_hostname(chosen);
+  ESP_LOGI(TAG, "mdns: http://%s.local/ (name \"%s\")", chosen, device_id_name());
+  try_claim_wakelight();
+}
+
+static void mdns_refresh_task(void *arg) {
+  (void)arg;
+  while (1) {
+    vTaskDelay(pdMS_TO_TICKS(5 * 60 * 1000));  // 5 min
+    try_claim_wakelight();
+  }
+}
+
 static void start_mdns(void) {
   esp_err_t err = mdns_init();
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "mdns_init failed: %d", err);
     return;
   }
-  mdns_hostname_set("wakelight");
-  mdns_instance_name_set("Wakelight");
-  mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
-  ESP_LOGI(TAG, "mdns: http://wakelight.local/");
+  // Set hostname/instance FIRST so services inherit them, then add services.
+  // _wakelight._tcp is our discovery vehicle: peers PTR-query it to build the
+  // picker list. TXT carries the friendly name + slug; refreshed on rename
+  // via update_wakelight_txt().
+  apply_mdns_identity();
+  esp_err_t sa = mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+  if (sa != ESP_OK) ESP_LOGW(TAG, "_http svc add failed: %d", sa);
+  sa = mdns_service_add(NULL, "_wakelight", "_tcp", 80, NULL, 0);
+  if (sa != ESP_OK) ESP_LOGW(TAG, "_wakelight svc add failed: %d", sa);
+  update_wakelight_txt();
+  xTaskCreate(mdns_refresh_task, "mdns-refresh", 3072, NULL, 2, NULL);
+}
+
+// Look up a TXT key in an mdns_result_t's flat key/value arrays.
+static const char *txt_lookup(const mdns_result_t *r, const char *key) {
+  for (size_t i = 0; i < r->txt_count; i++) {
+    if (r->txt[i].key && strcmp(r->txt[i].key, key) == 0) return r->txt[i].value;
+  }
+  return NULL;
+}
+
+static esp_err_t peers_get_h(httpd_req_t *req) {
+  cJSON *root = cJSON_CreateObject();
+  cJSON *arr = cJSON_AddArrayToObject(root, "peers");
+
+  // Always list self first so the picker has at least one entry even if
+  // the mDNS browse hasn't propagated yet.
+  cJSON *me = cJSON_CreateObject();
+  cJSON_AddStringToObject(me, "name", device_id_name());
+  cJSON_AddStringToObject(me, "slug", device_id_slug());
+  cJSON_AddBoolToObject(me, "self", true);
+  cJSON_AddItemToArray(arr, me);
+
+  mdns_result_t *results = NULL;
+  // 1500 ms is a healthy window for same-LAN PTR; max 8 peers caps memory.
+  esp_err_t qr = mdns_query_ptr("_wakelight", "_tcp", 1500, 8, &results);
+  if (qr == ESP_OK) {
+    for (mdns_result_t *r = results; r; r = r->next) {
+      const char *slug = txt_lookup(r, "slug");
+      const char *name = txt_lookup(r, "name");
+      // Skip self (TXT slug matches ours) and any responder missing a slug.
+      if (!slug || !slug[0]) continue;
+      if (strcmp(slug, device_id_slug()) == 0) continue;
+      cJSON *p = cJSON_CreateObject();
+      cJSON_AddStringToObject(p, "name", name && name[0] ? name : slug);
+      cJSON_AddStringToObject(p, "slug", slug);
+      cJSON_AddBoolToObject(p, "self", false);
+      cJSON_AddItemToArray(arr, p);
+    }
+    mdns_query_results_free(results);
+  } else {
+    ESP_LOGW(TAG, "peers query failed: %d", qr);
+  }
+
+  char *out = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+  if (!out) return httpd_resp_send_500(req);
+  httpd_resp_set_type(req, "application/json");
+  esp_err_t r = httpd_resp_send(req, out, strlen(out));
+  free(out);
+  return r;
+}
+
+static esp_err_t device_get_h(httpd_req_t *req) {
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "name", device_id_name());
+  cJSON_AddStringToObject(root, "slug", device_id_slug());
+  cJSON_AddStringToObject(root, "hostname", device_id_chosen_hostname());
+  cJSON_AddStringToObject(root, "default_hostname", device_id_default_hostname());
+  cJSON_AddBoolToObject(root, "holds_wakelight", device_id_holds_wakelight());
+  char *out = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+  if (!out) return httpd_resp_send_500(req);
+  httpd_resp_set_type(req, "application/json");
+  esp_err_t r = httpd_resp_send(req, out, strlen(out));
+  free(out);
+  return r;
+}
+
+static esp_err_t device_put_h(httpd_req_t *req) {
+  if (req->content_len > 256) {
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body too big");
+  }
+  char body[257];
+  int total = 0;
+  while (total < req->content_len) {
+    int r = httpd_req_recv(req, body + total, req->content_len - total);
+    if (r <= 0) return httpd_resp_send_500(req);
+    total += r;
+  }
+  body[total] = 0;
+  cJSON *root = cJSON_Parse(body);
+  if (!root) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json");
+  cJSON *name = cJSON_GetObjectItem(root, "name");
+  if (!cJSON_IsString(name)) {
+    cJSON_Delete(root);
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid name");
+  }
+  char prospective[33];
+  device_id_slug_for(name->valuestring, prospective, sizeof(prospective));
+  // Skip the probe if the slug is what we already publish — otherwise we'd
+  // see our own A-record and reject a no-op rename.
+  if (strcmp(prospective, device_id_chosen_hostname()) != 0 &&
+      hostname_taken_by_other(prospective)) {
+    cJSON_Delete(root);
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_set_type(req, "application/json");
+    const char *msg = "{\"error\":\"name_taken\"}";
+    return httpd_resp_send(req, msg, strlen(msg));
+  }
+  bool ok = device_id_set_name(name->valuestring);
+  cJSON_Delete(root);
+  if (!ok) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid name");
+  apply_mdns_identity();
+  update_wakelight_txt();
+  return device_get_h(req);
 }
 
 void http_ui_start(void) {
@@ -276,6 +525,7 @@ void http_ui_start(void) {
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
   cfg.stack_size = 6144;
   cfg.close_fn = ws_close_fn;
+  cfg.max_uri_handlers = sizeof(uris) / sizeof(uris[0]);
   httpd_handle_t srv = NULL;
   if (httpd_start(&srv, &cfg) != ESP_OK) {
     ESP_LOGE(TAG, "httpd_start failed");

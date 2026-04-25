@@ -22,10 +22,12 @@ static SemaphoreHandle_t g_lock;
 static void default_schedule(schedule_t *s) {
   memset(s, 0, sizeof(*s));
   s->enabled = false;
-  s->count = 3;
+  s->count = 5;
   s->points[0] = (waypoint_t){.minute_of_day = 6 * 60 + 30, .brightness_pct = 0,   .cct_k = 2500};
-  s->points[1] = (waypoint_t){.minute_of_day = 6 * 60 + 50, .brightness_pct = 30,  .cct_k = 3000};
-  s->points[2] = (waypoint_t){.minute_of_day = 7 * 60 + 0,  .brightness_pct = 100, .cct_k = 5000};
+  s->points[1] = (waypoint_t){.minute_of_day = 6 * 60 + 40, .brightness_pct = 10,  .cct_k = 3000};
+  s->points[2] = (waypoint_t){.minute_of_day = 6 * 60 + 50, .brightness_pct = 30,  .cct_k = 3000};
+  s->points[3] = (waypoint_t){.minute_of_day = 6 * 60 + 55, .brightness_pct = 50,  .cct_k = 3000};
+  s->points[4] = (waypoint_t){.minute_of_day = 7 * 60 + 0,  .brightness_pct = 100, .cct_k = 3000};
 }
 
 static void sort_points(schedule_t *s) {
