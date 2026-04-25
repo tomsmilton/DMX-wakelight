@@ -374,6 +374,9 @@ static void update_wakelight_txt(void) {
   mdns_service_txt_set("_wakelight", "_tcp", items, sizeof(items) / sizeof(items[0]));
 }
 
+// Sets hostname + instance; safe to call before services are added (boot)
+// and after them (rename). Caller is responsible for update_wakelight_txt()
+// once the _wakelight._tcp service exists.
 static void apply_mdns_identity(void) {
   char chosen[HOST_BUF];
   pick_hostname(chosen);
@@ -381,7 +384,6 @@ static void apply_mdns_identity(void) {
   mdns_instance_name_set(device_id_name());
   device_id_set_chosen_hostname(chosen);
   ESP_LOGI(TAG, "mdns: http://%s.local/ (name \"%s\")", chosen, device_id_name());
-  update_wakelight_txt();
   try_claim_wakelight();
 }
 
@@ -399,12 +401,16 @@ static void start_mdns(void) {
     ESP_LOGW(TAG, "mdns_init failed: %d", err);
     return;
   }
-  mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
-  // _wakelight._tcp is our discovery vehicle: peers PTR-query it to build
-  // the picker list. TXT carries the friendly name + slug; refreshed on
-  // rename via update_wakelight_txt().
-  mdns_service_add(NULL, "_wakelight", "_tcp", 80, NULL, 0);
+  // Set hostname/instance FIRST so services inherit them, then add services.
+  // _wakelight._tcp is our discovery vehicle: peers PTR-query it to build the
+  // picker list. TXT carries the friendly name + slug; refreshed on rename
+  // via update_wakelight_txt().
   apply_mdns_identity();
+  esp_err_t sa = mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+  if (sa != ESP_OK) ESP_LOGW(TAG, "_http svc add failed: %d", sa);
+  sa = mdns_service_add(NULL, "_wakelight", "_tcp", 80, NULL, 0);
+  if (sa != ESP_OK) ESP_LOGW(TAG, "_wakelight svc add failed: %d", sa);
+  update_wakelight_txt();
   xTaskCreate(mdns_refresh_task, "mdns-refresh", 3072, NULL, 2, NULL);
 }
 
@@ -509,6 +515,7 @@ static esp_err_t device_put_h(httpd_req_t *req) {
   cJSON_Delete(root);
   if (!ok) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid name");
   apply_mdns_identity();
+  update_wakelight_txt();
   return device_get_h(req);
 }
 
