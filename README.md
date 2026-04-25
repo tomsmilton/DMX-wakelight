@@ -32,6 +32,12 @@ last waypoint, the lamp **holds at those values** until either:
 
 The schedule is stored in NVS so it survives power cycles.
 
+The *link times* toggle (🔗 above the waypoint list) shifts every
+other waypoint by the same delta when you change one — handy for
+nudging the whole ramp forward or back without re-entering each row.
+The *default ramp* button reseeds a five-point morning curve as a
+starting point.
+
 ### Override buttons
 
 Three pill buttons sit above the schedule:
@@ -68,6 +74,24 @@ pushes the new DMX frame immediately (~30 ms throttle on the wire).
 you explicitly hit Auto/On/Off on the schedule page. Re-opening the
 Live page seeds the sliders from the lamp's current effective state.
 
+### Multiple lamps
+
+Each device derives an mDNS hostname from its friendly name (e.g.
+"Bedroom" → `bedroom.local`). On boot it probes the LAN; if the slug
+is already taken by another wakelight it falls back to `slug-2`,
+`slug-3`, …, and ultimately to a MAC-derived `wakelight-XXXX` that's
+guaranteed unique.
+
+The first lamp to come up also claims `wakelight.local` as a delegate
+hostname. Hitting `http://wakelight.local/` from anywhere on the LAN
+serves a picker that lists every lamp it can see and links through
+to each one's slug URL. Discovery is via a `_wakelight._tcp` mDNS
+service whose TXT records carry `name` and `slug`.
+
+Rename a lamp from the *This lamp* card on the schedule page. The
+firmware probes the new slug for clashes and returns 409 if another
+wakelight is already using it. Names persist in NVS.
+
 ### Status pill
 
 Top of the schedule page, polled every 5 s:
@@ -93,15 +117,17 @@ not editable from the graph.
 
 ```
 ┌──────────────┐                          ┌──────────────┐
-│ index.html   │  GET /api/schedule       │  schedule    │  ◀─NVS
-│ live.html    │  PUT /api/schedule       │  (waypoints) │
-│              │  GET /api/status (5s)    └──────────────┘
-│ (gzipped     │  POST /api/override      ┌──────────────┐
-│  & embedded  │  POST /api/dismiss       │  override    │
-│  in flash)   │  WS /ws/live             │  (atomic)    │
-└──────────────┘                          ├──────────────┤
-                                          │  dismiss     │  ◀─NVS
-                                          │  (atomic)    │
+│ index.html   │  GET  /api/schedule      │  schedule    │  ◀─NVS
+│ live.html    │  PUT  /api/schedule      │  (waypoints) │
+│ picker.html  │  GET  /api/status (5s)   ├──────────────┤
+│              │  POST /api/override      │  override    │
+│ (gzipped     │  POST /api/dismiss       │  (atomic)    │
+│  & embedded  │  GET  /api/device        ├──────────────┤
+│  in flash)   │  PUT  /api/device        │  dismiss     │  ◀─NVS
+│              │  GET  /api/peers         │  (atomic)    │
+│              │  WS   /ws/live           ├──────────────┤
+└──────────────┘                          │  device_id   │  ◀─NVS
+                                          │  (name+slug) │
                                           └──────────────┘
                                                   │
                                                   ▼ 1 Hz
@@ -162,15 +188,19 @@ pio run -e wakelight -t upload
 First boot the ESP joins WiFi, syncs SNTP from `pool.ntp.org` (London
 TZ with auto DST is hard-coded — change `setenv("TZ", ...)` in
 [src/wifi_sntp.c](src/wifi_sntp.c) if you're elsewhere), advertises
-itself on mDNS as `wakelight.local`, and the schedule loads from NVS
-(or seeds with a default 06:30→07:00 ramp on a fresh device).
+itself on mDNS at `wakelight-<MAC4>.local` (or your chosen slug, see
+[Multiple lamps](#multiple-lamps)), opportunistically claims
+`wakelight.local` as a delegate, and the schedule loads from NVS (or
+seeds with a default morning ramp on a fresh device).
 
 ### 4. Open the UI
 
 On a phone connected to the same WiFi:
 
-- `http://wakelight.local/` for the schedule
-- `http://wakelight.local/live` for live sliders
+- `http://wakelight.local/` — picker that lists every lamp on the
+  network and links through to its schedule page
+- `http://<slug>.local/` — schedule page for that lamp directly
+- `http://<slug>.local/live` — live sliders
 
 If mDNS doesn't resolve on your network, the IP shows up in the serial
 log on boot — use that instead.
@@ -190,8 +220,8 @@ below). Bump `CONFIG_LOG_DEFAULT_LEVEL_INFO=y` in
 
 ## Footprint
 
-The firmware is intentionally lean: ~743 KB on a 1 MB app partition
-(71 % used). Choices that matter:
+The firmware is intentionally lean: ~750 KB on a 1 MB app partition
+(72 % used). Choices that matter:
 
 - `-Os` with silent assertions
 - newlib-nano formatter (no float `printf`)
@@ -213,10 +243,12 @@ src/
   schedule.{c,h}    waypoint model, NVS persistence, interpolation
   override.{c,h}    auto/on/off/manual mode + manual values
   dismiss.{c,h}     "done for today", date-anchored, NVS-persisted
+  device_id.{c,h}   friendly name → slug, MAC-derived fallback, NVS
   wifi_sntp.{c,h}   STA join + London TZ + SNTP
-  http_ui.{c,h}     HTTP server, /api endpoints, WebSocket
+  http_ui.{c,h}     HTTP server, /api endpoints, WebSocket, mDNS
   index.html        schedule page (gzipped at build time)
   live.html         live slider page (gzipped at build time)
+  picker.html       served at wakelight.local; lists discovered peers
   wifi_secrets.h.example   copy → wifi_secrets.h, gitignored
 scripts/
   gen_index_html.py prebuild: gzip + embed HTML into C
