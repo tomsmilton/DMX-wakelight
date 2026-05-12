@@ -49,11 +49,23 @@
   input[type=time] { min-width: 110px; }
   input[type=number] { min-width: 80px; }
   .wp {
-    display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; align-items: end;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.1fr) auto;
+    gap: 8px; align-items: end;
     background: var(--panel2); border: 1px solid var(--line-soft); border-radius: 10px; padding: 10px;
     margin-bottom: 8px;
   }
+  /* Inside a waypoint card the grid track is what limits width; let inputs
+     shrink instead of pushing into the next column on narrow screens. */
+  .wp input { min-width: 0; font-variant-numeric: tabular-nums; }
+  .wp .time-input { letter-spacing: .02em; }
   .wp label { display: block; margin-bottom: 4px; }
+  .wp .del { align-self: end; }
+  @media (max-width: 380px) {
+    .wp { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; row-gap: 8px; }
+    .wp .time-cell { grid-column: 1 / span 2; }
+    .wp .del { grid-row: 1 / span 2; grid-column: 3; align-self: stretch; }
+  }
   button {
     background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 999px;
     padding: 10px 18px; font: inherit; font-weight: 600; cursor: pointer;
@@ -218,8 +230,18 @@ function modToHHMM(m) {
   return `${String(h).padStart(2,'0')}:${String(mm).padStart(2,'0')}`;
 }
 function hhmmToMod(v) {
-  const [h, m] = v.split(':').map(Number);
-  return (h * 60 + m) | 0;
+  const match = /^(\d{1,2}):(\d{2})$/.exec(String(v).trim());
+  if (!match) return null;
+  const h = +match[1], m = +match[2];
+  if (h > 23 || m > 59) return null;
+  return h * 60 + m;
+}
+// Auto-insert the colon and strip non-digits so users can type HH:MM as
+// four straight digits ("0515") on a desktop keyboard.
+function formatTimeTyping(raw) {
+  let v = String(raw).replace(/\D/g, '').slice(0, 4);
+  if (v.length >= 3) v = v.slice(0, 2) + ':' + v.slice(2);
+  return v;
 }
 
 function renderGraph() {
@@ -266,17 +288,31 @@ function render() {
     const d = document.createElement('div');
     d.className = 'wp';
     d.innerHTML = `
-      <div><label>time</label><input type="time" value="${modToHHMM(p.m)}" data-k="m"></div>
-      <div><label>bright %</label><input type="number" min="0" max="100" value="${p.b}" data-k="b"></div>
-      <div class="cct-wrap"><label>colour K</label><input type="number" min="2500" max="10000" step="50" value="${p.k}" data-k="k"><span class="cct-swatch" style="background:${cctColor(p.k)}"></span></div>
+      <div class="time-cell"><label>time</label><input type="text" class="time-input" inputmode="numeric" pattern="[0-2]?\\d:[0-5]\\d" maxlength="5" placeholder="HH:MM" value="${modToHHMM(p.m)}" data-k="m"></div>
+      <div><label>bright %</label><input type="number" inputmode="numeric" min="0" max="100" value="${p.b}" data-k="b"></div>
+      <div class="cct-wrap"><label>colour K</label><input type="number" inputmode="numeric" min="2500" max="10000" step="50" value="${p.k}" data-k="k"><span class="cct-swatch" style="background:${cctColor(p.k)}"></span></div>
       <button class="del" title="remove">✕</button>
     `;
     const swatch = d.querySelector('.cct-swatch');
+    const timeInp = d.querySelector('input[data-k="m"]');
+    timeInp.addEventListener('input', () => {
+      const sel = timeInp.selectionStart;
+      const before = timeInp.value;
+      const after = formatTimeTyping(before);
+      if (after !== before) {
+        timeInp.value = after;
+        const caret = sel == null
+          ? after.length
+          : Math.max(0, Math.min(sel + (after.length - before.length), after.length));
+        try { timeInp.setSelectionRange(caret, caret); } catch (e) { /* ignore */ }
+      }
+    });
     d.querySelectorAll('input').forEach(inp => {
       inp.addEventListener('change', () => {
         const k = inp.dataset.k;
         if (k === 'm') {
           const next = hhmmToMod(inp.value);
+          if (next == null) { inp.value = modToHHMM(p.m); return; }
           if (linked && state.points.length > 1) {
             let delta = next - p.m;
             const lo = Math.min(...state.points.map(q => q.m));
@@ -286,6 +322,7 @@ function render() {
             render();
           } else {
             p.m = next;
+            inp.value = modToHHMM(p.m);
             renderGraph();
           }
         } else {
